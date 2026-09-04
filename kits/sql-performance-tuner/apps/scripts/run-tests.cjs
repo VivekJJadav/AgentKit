@@ -117,6 +117,52 @@ async function main() {
   assert.equal(firstProposal.strategy, "filter_first_index");
   assert.match(firstProposal.indexSql, /^CREATE INDEX/i);
 
+  const liveEnvironmentKeys = [
+    "SQL_TUNER_ALLOW_LIVE",
+    "LAMATIC_API_URL",
+    "LAMATIC_PROJECT_ID",
+    "LAMATIC_API_KEY",
+    "SQL_TUNER_STRATEGIST_FLOW_ID",
+  ];
+  const originalLiveEnvironment = Object.fromEntries(
+    liveEnvironmentKeys.map((key) => [key, process.env[key]]),
+  );
+  const originalFetch = global.fetch;
+  const originalConsoleError = console.error;
+  const errorLogs = [];
+  try {
+    process.env.SQL_TUNER_ALLOW_LIVE = "true";
+    process.env.LAMATIC_API_URL = "https://lamatic.invalid/graphql";
+    process.env.LAMATIC_PROJECT_ID = "test-project";
+    process.env.LAMATIC_API_KEY = "test-api-key";
+    process.env.SQL_TUNER_STRATEGIST_FLOW_ID = "test-flow";
+    global.fetch = async () => new Response(JSON.stringify({
+      errors: [{ message: "apiKey=super-secret; SELECT customer_id FROM orders" }],
+    }), {
+      status: 500,
+      statusText: "Internal Server Error",
+      headers: { "x-request-id": "safe-request-id" },
+    });
+    console.error = (...args) => errorLogs.push(args);
+    await assert.rejects(
+      chooseNextExperiment("live", firstInput),
+      /request failed with HTTP 500/,
+    );
+  } finally {
+    global.fetch = originalFetch;
+    console.error = originalConsoleError;
+    for (const key of liveEnvironmentKeys) {
+      const value = originalLiveEnvironment[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  assert.equal(errorLogs.length, 1, "An upstream HTTP failure should produce one server log entry.");
+  const serializedErrorLog = JSON.stringify(errorLogs[0]);
+  assert.match(serializedErrorLog, /safe-request-id/);
+  assert.match(serializedErrorLog, /\[REDACTED\]/);
+  assert.doesNotMatch(serializedErrorLog, /super-secret|SELECT customer_id/);
+
   const exhausted = await chooseNextExperiment("demo", { ...firstInput, remainingExperiments: 0 });
   assert.equal(exhausted.action, "conclude", "Remaining budget 0 should conclude.");
   assert.equal(exhausted.conclusionCode, "budget_exhausted");

@@ -48,10 +48,50 @@ function ensureLiveEnabled(): void {
   }
 }
 
-async function executeLiveFlow(flowName: string, flowId: string | undefined, input: object): Promise<unknown> {
+async function executeLiveFlow(
+  flowName: string,
+  flowId: string | undefined,
+  input: object,
+  signal?: AbortSignal,
+): Promise<unknown> {
   ensureLiveEnabled();
   if (!flowId?.trim()) throw new Error(`Live mode needs ${flowName}.`);
-  const raw = await getLiveClient().executeFlow(flowId, input);
+  const liveClient = getLiveClient();
+  const response = await fetch(liveClient.endpoint, {
+    method: "POST",
+    headers: liveClient.getHeaders(),
+    body: JSON.stringify({
+      query: `query ExecuteWorkflow($workflowId: String!, $payload: JSON!) {
+        executeWorkflow(workflowId: $workflowId, payload: $payload) {
+          status
+          result
+        }
+      }`,
+      variables: { workflowId: flowId, payload: input },
+    }),
+    cache: "no-store",
+    signal,
+  });
+  const responseText = await response.text();
+  let payload: unknown;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error(`Lamatic ${flowName} request returned invalid JSON.`);
+  }
+  if (!response.ok) throw new Error(`Lamatic ${flowName} request failed with HTTP ${response.status}.`);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error(`Lamatic ${flowName} request returned an invalid response.`);
+  }
+  const graphqlResponse = payload as {
+    data?: { executeWorkflow?: unknown };
+    errors?: Array<{ message?: unknown }>;
+  };
+  if (graphqlResponse.errors?.length) {
+    const message = graphqlResponse.errors[0]?.message;
+    throw new Error(`Lamatic ${flowName} request failed: ${typeof message === "string" ? message : "Unknown error."}`);
+  }
+  const raw = graphqlResponse.data?.executeWorkflow;
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const response = raw as unknown as Record<string, unknown>;
     if (response.status === "error" || response.result === null) {
@@ -95,6 +135,18 @@ function parseEvidenceCsv(value: string | number): number[] {
       && all.indexOf(item) === index);
 }
 
+function parseReviewerEvidenceCsv(value: string | number): number[] {
+  const csv = String(value).trim();
+  if (!csv) return [];
+  const entries = csv.split(",").map((item) => item.trim());
+  if (entries.some((item) => !/^\d+$/.test(item))) {
+    throw new Error("Lamatic reviewer returned malformed experiment citations.");
+  }
+  return entries
+    .map(Number)
+    .filter((item, index, all) => all.indexOf(item) === index);
+}
+
 function normalizeStrategistDecision(value: unknown): StrategistDecision {
   const envelope = strategistEnvelopeSchema.parse(value);
   if (envelope.action === "conclude") {
@@ -127,11 +179,12 @@ function normalizeStrategistDecision(value: unknown): StrategistDecision {
   });
 }
 
-async function callStrategist(input: StrategistInput): Promise<StrategistDecision> {
+async function callStrategist(input: StrategistInput, signal?: AbortSignal): Promise<StrategistDecision> {
   const raw = await executeLiveFlow(
     "SQL_TUNER_STRATEGIST_FLOW_ID",
     process.env.SQL_TUNER_STRATEGIST_FLOW_ID,
     input,
+    signal,
   );
   return normalizeStrategistDecision(raw);
 }
@@ -223,17 +276,34 @@ export function normalizeReviewerOutput(raw: unknown, input: ReviewerInput): Rev
   if (envelope.outcome !== expectedOutcome) {
     throw new Error("Lamatic reviewer contradicted the deterministic outcome.");
   }
+  const citedExperiments = parseReviewerEvidenceCsv(envelope.citedExperimentsCsv);
+  const availableExperiments = new Set(input.experiments.map((experiment) => experiment.number));
+  if (citedExperiments.some((number) => !availableExperiments.has(number))) {
+    throw new Error("Lamatic reviewer cited an experiment that was not supplied.");
+  }
+  if (
+    input.deterministicOutcome === "improved"
+    && input.winningExperimentNumber
+    && !citedExperiments.includes(input.winningExperimentNumber)
+  ) {
+    throw new Error("Lamatic reviewer did not cite the deterministic winning experiment.");
+  }
+  const winner = input.experiments.find(
+    (experiment) => experiment.number === input.winningExperimentNumber,
+  );
   return reviewerOutputSchema.parse({
     contractVersion: AGENT_CONTRACT_VERSION,
     headline: envelope.headline,
     evidenceSummary: envelope.evidenceSummary,
-    recommendation: envelope.recommendation,
+    recommendation: winner
+      ? `Use experiment ${winner.number}: ${winner.candidateSql}`
+      : "Keep the original query.",
     limitations: [envelope.limitationsText],
-    citedExperiments: parseEvidenceCsv(envelope.citedExperimentsCsv),
+    citedExperiments,
   });
 }
 
-async function callReviewer(input: ReviewerInput): Promise<ReviewerOutput> {
+async function callReviewer(input: ReviewerInput, signal?: AbortSignal): Promise<ReviewerOutput> {
   const payload = {
     originalQuery: input.originalQuery,
     baseline: input.baseline,
@@ -247,6 +317,7 @@ async function callReviewer(input: ReviewerInput): Promise<ReviewerOutput> {
     "SQL_TUNER_REVIEWER_FLOW_ID",
     process.env.SQL_TUNER_REVIEWER_FLOW_ID,
     payload,
+    signal,
   );
   return normalizeReviewerOutput(raw, input);
 }
@@ -267,10 +338,18 @@ function demoReview(input: ReviewerInput): ReviewerOutput {
   };
 }
 
-export async function chooseNextExperiment(mode: RunMode, input: StrategistInput): Promise<StrategistDecision> {
-  return mode === "live" ? callStrategist(input) : demoDecision(input);
+export async function chooseNextExperiment(
+  mode: RunMode,
+  input: StrategistInput,
+  signal?: AbortSignal,
+): Promise<StrategistDecision> {
+  return mode === "live" ? callStrategist(input, signal) : demoDecision(input);
 }
 
-export async function reviewTuningOutcome(mode: RunMode, input: ReviewerInput): Promise<ReviewerOutput> {
-  return mode === "live" ? callReviewer(input) : demoReview(input);
+export async function reviewTuningOutcome(
+  mode: RunMode,
+  input: ReviewerInput,
+  signal?: AbortSignal,
+): Promise<ReviewerOutput> {
+  return mode === "live" ? callReviewer(input, signal) : demoReview(input);
 }

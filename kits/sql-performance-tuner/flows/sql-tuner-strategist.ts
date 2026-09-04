@@ -27,6 +27,28 @@ export const meta = {
 
 // -- Inputs --
 export const inputs = {
+  "InstructorLLMNode_100": [
+    {
+      "name": "generativeModelName",
+      "label": "Generative Model Name",
+      "type": "model",
+      "modelType": "generator/text",
+      "mode": "instructor",
+      "description": "Select the model that diagnoses measured SQLite evidence.",
+      "required": true,
+      "isPrivate": true,
+      "defaultValue": [
+        {
+          "configName": "configA",
+          "type": "generator/text",
+          "provider_name": "gemini",
+          "credential_name": "",
+          "params": { "temperature": 0.2 }
+        }
+      ],
+      "typeOptions": { "loadOptionsMethod": "listModels" }
+    }
+  ],
   "InstructorLLMNode_101": [
     {
       "name": "generativeModelName",
@@ -41,7 +63,7 @@ export const inputs = {
         {
           "configName": "configA",
           "type": "generator/text",
-          "provider_name": "groq",
+          "provider_name": "gemini",
           "credential_name": "",
           "params": {}
         }
@@ -59,10 +81,13 @@ export const references = {
     "default": "@constitutions/default.md"
   },
   "prompts": {
+    "sql_tuner_evidence_system": "@prompts/sql-tuner-strategist_instructor-llmnode-100_system_0.md",
+    "sql_tuner_evidence_user": "@prompts/sql-tuner-strategist_instructor-llmnode-100_user_1.md",
     "sql_tuner_strategist_system": "@prompts/sql-tuner-strategist_instructor-llmnode-101_system_0.md",
     "sql_tuner_strategist_user": "@prompts/sql-tuner-strategist_instructor-llmnode-101_user_1.md"
   },
   "modelConfigs": {
+    "sql_tuner_evidence_model": "@model-configs/sql-tuner-strategist_instructor-llmnode-100_generative-model-name.ts",
     "sql_tuner_strategist_model": "@model-configs/sql-tuner-strategist_instructor-llmnode-101_generative-model-name.ts"
   }
 };
@@ -87,7 +112,7 @@ export const nodes = [
     }
   },
   {
-    "id": "InstructorLLMNode_101",
+    "id": "InstructorLLMNode_100",
     "type": "dynamicNode",
     "position": {
       "x": 320,
@@ -96,9 +121,41 @@ export const nodes = [
     "data": {
       "nodeId": "InstructorLLMNode",
       "values": {
-        "nodeName": "Generate Strategist Decision",
+        "nodeName": "Evidence Analyst",
         "tools": [],
-        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"action\": { \"type\": \"string\", \"enum\": [\"create_index\", \"rewrite_query\", \"conclude\"], \"required\": true },\n    \"strategy\": { \"type\": \"string\", \"enum\": [\"covering_index\", \"filter_first_index\", \"grouping_first_index\", \"partial_index\", \"query_rewrite\", \"revise_failed_candidate\", \"conclude\"], \"required\": true },\n    \"hypothesis\": { \"type\": \"string\" },\n    \"expectedPlanChange\": { \"type\": \"string\" },\n    \"sql\": { \"type\": \"string\" },\n    \"indexSql\": { \"type\": \"string\" },\n    \"adaptation\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"learnedFromEvidence\": { \"type\": \"string\" },\n        \"differsFromPrevious\": { \"type\": \"string\" },\n        \"respondsToExperiment\": { \"type\": \"number\" }\n      }\n    },\n    \"stopCondition\": { \"type\": \"string\" },\n    \"conclusionCode\": { \"type\": \"string\", \"enum\": [\"winner_found\", \"budget_exhausted\", \"no_safe_distinct_experiment\", \"insufficient_evidence\"] },\n    \"reasoning\": { \"type\": \"string\" },\n    \"evidenceUsedCsv\": { \"type\": \"string\" }\n  }\n}",
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"bottleneck\": { \"type\": \"string\", \"required\": true },\n    \"evidenceLessons\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"strategiesToAvoid\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"recommendedDirection\": { \"type\": \"string\", \"enum\": [\"index\", \"rewrite\", \"revise\", \"conclude\"], \"required\": true },\n    \"reasoning\": { \"type\": \"string\", \"required\": true }\n  }\n}",
+        "prompts": [
+          {
+            "id": "sql-tuner-evidence-system",
+            "role": "system",
+            "content": "@prompts/sql-tuner-strategist_instructor-llmnode-100_system_0.md"
+          },
+          {
+            "id": "sql-tuner-evidence-user",
+            "role": "user",
+            "content": "@prompts/sql-tuner-strategist_instructor-llmnode-100_user_1.md"
+          }
+        ],
+        "memories": "[]",
+        "messages": "[]",
+        "attachments": "",
+        "generativeModelName": "@model-configs/sql-tuner-strategist_instructor-llmnode-100_generative-model-name.ts"
+      }
+    }
+  },
+  {
+    "id": "InstructorLLMNode_101",
+    "type": "dynamicNode",
+    "position": {
+      "x": 640,
+      "y": 0
+    },
+    "data": {
+      "nodeId": "InstructorLLMNode",
+      "values": {
+        "nodeName": "Experiment Strategist",
+        "tools": [],
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"action\": { \"type\": \"string\", \"enum\": [\"create_index\", \"rewrite_query\", \"conclude\"], \"required\": true },\n    \"strategy\": { \"type\": \"string\", \"enum\": [\"covering_index\", \"filter_first_index\", \"grouping_first_index\", \"partial_index\", \"query_rewrite\", \"revise_failed_candidate\", \"conclude\"], \"required\": true },\n    \"hypothesis\": { \"type\": \"string\" },\n    \"expectedPlanChange\": { \"type\": \"string\" },\n    \"sql\": { \"type\": \"string\" },\n    \"indexSql\": { \"type\": \"string\" },\n    \"adaptationLearned\": { \"type\": \"string\" },\n    \"differsFromPrevious\": { \"type\": \"string\" },\n    \"respondsToExperiment\": { \"type\": \"number\" },\n    \"stopCondition\": { \"type\": \"string\" },\n    \"conclusionCode\": { \"type\": \"string\", \"enum\": [\"winner_found\", \"budget_exhausted\", \"no_safe_distinct_experiment\", \"insufficient_evidence\"] },\n    \"reasoning\": { \"type\": \"string\" },\n    \"evidenceUsedCsv\": { \"type\": \"string\" }\n  }\n}",
         "prompts": [
           {
             "id": "sql-tuner-strategist-system",
@@ -122,14 +179,14 @@ export const nodes = [
     "id": "graphqlResponseNode_101",
     "type": "dynamicNode",
     "position": {
-      "x": 640,
+      "x": 960,
       "y": 0
     },
     "data": {
       "nodeId": "graphqlResponseNode",
       "values": {
         "nodeName": "API Response",
-        "outputMapping": "{\n  \"action\": \"{{InstructorLLMNode_101.output.action}}\",\n  \"strategy\": \"{{InstructorLLMNode_101.output.strategy}}\",\n  \"hypothesis\": \"{{InstructorLLMNode_101.output.hypothesis}}\",\n  \"expectedPlanChange\": \"{{InstructorLLMNode_101.output.expectedPlanChange}}\",\n  \"sql\": \"{{InstructorLLMNode_101.output.sql}}\",\n  \"indexSql\": \"{{InstructorLLMNode_101.output.indexSql}}\",\n  \"adaptation\": {{InstructorLLMNode_101.output.adaptation}},\n  \"stopCondition\": \"{{InstructorLLMNode_101.output.stopCondition}}\",\n  \"conclusionCode\": \"{{InstructorLLMNode_101.output.conclusionCode}}\",\n  \"reasoning\": \"{{InstructorLLMNode_101.output.reasoning}}\",\n  \"evidenceUsedCsv\": \"{{InstructorLLMNode_101.output.evidenceUsedCsv}}\"\n}"
+        "outputMapping": "{\n  \"action\": \"{{InstructorLLMNode_101.output.action}}\",\n  \"strategy\": \"{{InstructorLLMNode_101.output.strategy}}\",\n  \"hypothesis\": \"{{InstructorLLMNode_101.output.hypothesis}}\",\n  \"expectedPlanChange\": \"{{InstructorLLMNode_101.output.expectedPlanChange}}\",\n  \"sql\": \"{{InstructorLLMNode_101.output.sql}}\",\n  \"indexSql\": \"{{InstructorLLMNode_101.output.indexSql}}\",\n  \"adaptation\": {\n    \"learnedFromEvidence\": \"{{InstructorLLMNode_101.output.adaptationLearned}}\",\n    \"differsFromPrevious\": \"{{InstructorLLMNode_101.output.differsFromPrevious}}\",\n    \"respondsToExperiment\": \"{{InstructorLLMNode_101.output.respondsToExperiment}}\"\n  },\n  \"stopCondition\": \"{{InstructorLLMNode_101.output.stopCondition}}\",\n  \"conclusionCode\": \"{{InstructorLLMNode_101.output.conclusionCode}}\",\n  \"reasoning\": \"{{InstructorLLMNode_101.output.reasoning}}\",\n  \"evidenceUsedCsv\": \"{{InstructorLLMNode_101.output.evidenceUsedCsv}}\"\n}"
       }
     }
   }
@@ -137,8 +194,16 @@ export const nodes = [
 
 export const edges = [
   {
-    "id": "triggerNode_1-InstructorLLMNode_101",
+    "id": "triggerNode_1-InstructorLLMNode_100",
     "source": "triggerNode_1",
+    "target": "InstructorLLMNode_100",
+    "sourceHandle": "bottom",
+    "targetHandle": "top",
+    "type": "defaultEdge"
+  },
+  {
+    "id": "InstructorLLMNode_100-InstructorLLMNode_101",
+    "source": "InstructorLLMNode_100",
     "target": "InstructorLLMNode_101",
     "sourceHandle": "bottom",
     "targetHandle": "top",

@@ -1,4 +1,12 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import reviewerFlow from "../../flows/sql-tuner-reviewer.ts";
+import strategistFlow from "../../flows/sql-tuner-strategist.ts";
+import reviewerModel from "../../model-configs/sql-tuner-reviewer_instructor-llmnode-202_generative-model-name.ts";
+import strategistModel from "../../model-configs/sql-tuner-strategist_instructor-llmnode-101_generative-model-name.ts";
 
 import {
   AGENT_CONTRACT_VERSION,
@@ -127,5 +135,30 @@ assert.equal(reviewerOutputSchema.safeParse({
   limitations: ["The benchmark used the supplied SQLite snapshot."],
   citedExperiments: [1],
 }).success, true);
+
+const kitRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+for (const flow of [strategistFlow, reviewerFlow]) {
+  const nodeIds = new Set(flow.nodes.map((node) => node.id));
+  for (const edge of flow.edges) {
+    assert.ok(nodeIds.has(edge.source), `Flow edge source ${edge.source} must exist.`);
+    assert.ok(nodeIds.has(edge.target), `Flow edge target ${edge.target} must exist.`);
+  }
+  for (const group of [flow.references.prompts, flow.references.modelConfigs]) {
+    for (const reference of Object.values(group)) {
+      assert.ok(existsSync(resolve(kitRoot, reference.slice(1))), `Flow reference ${reference} must exist.`);
+    }
+  }
+}
+
+assert.deepEqual(
+  strategistFlow.nodes.map((node) => node.data.values.nodeName),
+  ["API Request", "Evidence Analyst", "Experiment Strategist", "API Response"],
+);
+assert.deepEqual(
+  reviewerFlow.nodes.map((node) => node.data.values.nodeName),
+  ["API Request", "Evidence Synthesizer", "Final Reviewer", "API Response"],
+);
+assert.equal(strategistModel.generativeModelName[0]?.provider_name, "gemini");
+assert.equal(reviewerModel.generativeModelName[0]?.provider_name, "gemini");
 
 console.log("Agent contract checks passed.");

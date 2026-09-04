@@ -33,6 +33,10 @@ function summarizeError(error: unknown): string {
   return error instanceof Error ? error.message : "The candidate could not be evaluated.";
 }
 
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("The tuning request was cancelled.");
+}
+
 function speedupFor(baselineMs: number, candidateMs: number): number {
   if (candidateMs <= 0) return 1;
   return Math.max(0.001, baselineMs / candidateMs);
@@ -52,15 +56,22 @@ function makeBaseline(database: Database, query: string): Baseline {
 }
 
 type PlannerDependencies = {
-  chooseNextExperiment: (mode: RunMode, input: StrategistInput) => Promise<StrategistDecision>;
-  reviewTuningOutcome: (mode: RunMode, input: ReviewerInput) => Promise<ReviewerOutput>;
+  chooseNextExperiment: (
+    mode: RunMode,
+    input: StrategistInput,
+    signal?: AbortSignal,
+  ) => Promise<StrategistDecision>;
+  reviewTuningOutcome: (
+    mode: RunMode,
+    input: ReviewerInput,
+    signal?: AbortSignal,
+  ) => Promise<ReviewerOutput>;
 };
 
 function indexKeyFromSql(sql: string, schema: ReturnType<typeof readSchema>): string {
   const index = validateCreateIndex(sql, schema);
-  return `index:${index.table.toLowerCase()}:${[...index.columns]
+  return `index:${index.table.toLowerCase()}:${index.columns
     .map((column) => column.toLowerCase())
-    .sort()
     .join(",")}`;
 }
 
@@ -92,6 +103,7 @@ export async function tuneQueryWithDependencies(
   mode: RunMode,
   dependencies: PlannerDependencies,
   databaseBytes?: Uint8Array,
+  signal?: AbortSignal,
 ): Promise<TuningReport> {
   let query: string;
   try {
@@ -108,13 +120,16 @@ export async function tuneQueryWithDependencies(
 
   const SQL = await getSqlJs();
   const source = databaseBytes ? new SQL.Database(databaseBytes) : createDemoDatabase(SQL);
+  let baseline: Baseline | undefined;
+  const experiments: StrategistExperimentEvidence[] = [];
 
   try {
+    assertNotAborted(signal);
     const schema = readSchema(source);
-    const baseline = makeBaseline(source, query);
-    const experiments: StrategistExperimentEvidence[] = [];
+    baseline = makeBaseline(source, query);
 
     for (let number = 1; number <= MAX_EXPERIMENTS; number += 1) {
+      assertNotAborted(signal);
       const strategistInput = strategistInputSchema.parse({
         contractVersion: AGENT_CONTRACT_VERSION,
         originalQuery: query,
@@ -124,7 +139,8 @@ export async function tuneQueryWithDependencies(
         attemptedStrategies: experiments.map((experiment) => experiment.strategy),
         remainingExperiments: MAX_EXPERIMENTS - experiments.length,
       });
-      const decision = await dependencies.chooseNextExperiment(mode, strategistInput);
+      const decision = await dependencies.chooseNextExperiment(mode, strategistInput, signal);
+      assertNotAborted(signal);
       if (decision.action === "conclude") break;
 
       const candidateSql = decision.action === "rewrite_query" ? decision.sql : decision.indexSql;
@@ -158,6 +174,7 @@ export async function tuneQueryWithDependencies(
           candidateDatabase.run(validated.sql);
         }
 
+        assertNotAborted(signal);
         const result = inspectResult(candidateDatabase, queryToRun);
         const equivalent = resultsAreEquivalent(baseline.result, result);
         if (!equivalent) {
@@ -173,6 +190,7 @@ export async function tuneQueryWithDependencies(
             summary: "Rejected because the complete result differs from the baseline.",
             observation: "The candidate changed the complete result set and cannot be recommended.",
             adaptation: decision.adaptation,
+            stopConditions: decision.stopConditions,
             result,
             equivalence: false,
           });
@@ -181,6 +199,7 @@ export async function tuneQueryWithDependencies(
 
         const plan = explainQuery(candidateDatabase, queryToRun);
         const benchmark = benchmarkQuery(candidateDatabase, queryToRun);
+        assertNotAborted(signal);
         const speedup = speedupFor(baseline.benchmark.medianMs, benchmark.medianMs);
         const verdict = speedup >= MIN_RECOMMENDED_SPEEDUP
           ? "improved"
@@ -203,6 +222,7 @@ export async function tuneQueryWithDependencies(
             ? `Experiment ${number} preserved all results and measured ${speedup.toFixed(2)}x faster than baseline.`
             : `Experiment ${number} preserved all results but measured ${speedup.toFixed(2)}x versus baseline.`,
           adaptation: decision.adaptation,
+          stopConditions: decision.stopConditions,
           plan,
           result,
           benchmark,
@@ -210,6 +230,7 @@ export async function tuneQueryWithDependencies(
           speedup,
         });
       } catch (error) {
+        if (signal?.aborted) throw error;
         const guardRejected = error instanceof Error
           && /allowed|blocked|unknown|single|statement/i.test(error.message);
         experiments.push({
@@ -226,6 +247,7 @@ export async function tuneQueryWithDependencies(
             ? "The deterministic SQL safety guard rejected this candidate before execution."
             : "The candidate failed during isolated execution and produced no valid measurement.",
           adaptation: decision.adaptation,
+          stopConditions: decision.stopConditions,
         });
       } finally {
         candidateDatabase?.close();
@@ -242,7 +264,9 @@ export async function tuneQueryWithDependencies(
       deterministicOutcome,
       winningExperimentNumber: winner?.number,
     });
-    const review = await dependencies.reviewTuningOutcome(mode, reviewerInput);
+    assertNotAborted(signal);
+    const review = await dependencies.reviewTuningOutcome(mode, reviewerInput, signal);
+    assertNotAborted(signal);
 
     return tuningReportSchema.parse({
       status: deterministicOutcome,
@@ -263,9 +287,12 @@ export async function tuneQueryWithDependencies(
     return tuningReportSchema.parse({
       status: "failed",
       originalQuery: query,
-      experiments: [],
+      baseline,
+      experiments,
       conclusion: summarizeError(error),
-      caveats: [],
+      caveats: experiments.length
+        ? ["Completed experiment evidence was preserved even though the tuning run could not finish."]
+        : [],
     });
   } finally {
     source.close();
@@ -276,9 +303,10 @@ export async function tuneQuery(
   rawQuery: string,
   mode: RunMode,
   databaseBytes?: Uint8Array,
+  signal?: AbortSignal,
 ): Promise<TuningReport> {
   return tuneQueryWithDependencies(rawQuery, mode, {
     chooseNextExperiment,
     reviewTuningOutcome,
-  }, databaseBytes);
+  }, databaseBytes, signal);
 }

@@ -61,19 +61,24 @@ Copy the deployed project endpoint, project ID, and API key from Lamatic into
 `apps/.env.local`, then set:
 
 ```dotenv
-RUN_MODE="live"
 SQL_TUNER_ALLOW_LIVE="true"
 LAMATIC_API_URL="https://..."
 LAMATIC_PROJECT_ID="..."
 LAMATIC_API_KEY="..."
 SQL_TUNER_STRATEGIST_FLOW_ID="bd9e0cce-22c2-4cfb-9769-a57a6df40e87"
 SQL_TUNER_REVIEWER_FLOW_ID="aad3f235-e39c-47f4-a4ae-dd88c4ada1f0"
+UPSTASH_REDIS_REST_URL="https://..."
+UPSTASH_REDIS_REST_TOKEN="..."
 ```
 
 Select **Live Lamatic** in the interface. The strategist diagnoses the current
 evidence and chooses one next experiment. Local deterministic code validates,
 executes, compares, and benchmarks every candidate. After the bounded loop, the
 reviewer explains the measured outcome without changing the selected winner.
+Production deployments require Upstash Redis and rate-limit live attempts to
+five requests per client address per minute. Local development uses a bounded,
+expiring in-process fallback. Vercel request cancellation is enabled for the
+tuning route and is forwarded to active Lamatic requests.
 
 `apps/.env.local` is ignored and must never be committed. `apps/.env.example`
 contains only empty placeholders.
@@ -126,6 +131,10 @@ the `1.10x` threshold.
 ## Safety boundary
 
 - Accepts a single deterministic `SELECT` or `WITH` statement.
+- Rejects recursive CTEs and Cartesian joins because synchronous SQLite work
+  cannot be interrupted safely inside a request.
+- Tokenizes SQL structure before checking joins, so nested queries and quoted
+  text are not interpreted as raw SQL keywords or separators.
 - Executes candidates only in fresh in-memory database copies.
 - Allows only simple indexes on known tables and columns.
 - Compares complete results up to 10,000 rows before benchmarking.

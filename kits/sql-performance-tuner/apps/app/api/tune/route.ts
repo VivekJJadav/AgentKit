@@ -2,10 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { MAX_DATABASE_BYTES, MAX_QUERY_CHARACTERS, runModeSchema } from "../../../lib/contracts";
+import { checkLiveRateLimit, RateLimitConfigurationError } from "../../../lib/rate-limit";
 import { tuneQuery } from "../../../lib/tuner";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const requestSchema = z.object({
   query: z.string().min(1).max(MAX_QUERY_CHARACTERS),
@@ -16,6 +17,15 @@ const requestSchema = z.object({
 export async function POST(request: Request) {
   try {
     const input = requestSchema.parse(await request.json());
+    if (input.mode === "live") {
+      const rateLimit = await checkLiveRateLimit(request);
+      if (!rateLimit.allowed) {
+        return NextResponse.json(
+          { status: "failed", conclusion: "Live mode rate limit reached. Try again shortly.", experiments: [] },
+          { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+        );
+      }
+    }
     const databaseBytes = input.databaseBase64
       ? Uint8Array.from(Buffer.from(input.databaseBase64, "base64"))
       : undefined;
@@ -34,10 +44,16 @@ export async function POST(request: Request) {
         );
       }
     }
-    const report = await tuneQuery(input.query, input.mode, databaseBytes);
+    const report = await tuneQuery(input.query, input.mode, databaseBytes, request.signal);
     const status = report.status === "invalid-input" ? 400 : report.status === "failed" ? 500 : 200;
     return NextResponse.json(report, { status });
   } catch (error) {
+    if (error instanceof RateLimitConfigurationError) {
+      return NextResponse.json(
+        { status: "failed", conclusion: error.message, experiments: [] },
+        { status: 503 },
+      );
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
         { status: "invalid-input", conclusion: error.issues[0]?.message ?? "Invalid request.", experiments: [] },

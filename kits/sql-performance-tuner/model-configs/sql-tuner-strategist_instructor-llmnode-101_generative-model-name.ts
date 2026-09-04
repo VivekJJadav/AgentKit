@@ -6,9 +6,9 @@ export default {
       "type": "generator/text",
       "params": {},
       "configName": "configA",
-      "model_name": "groq/llama-3.3-70b-versatile",
+      "model_name": "gemini-pro-latest",
       "credentialId": "",
-      "provider_name": "groq",
+      "provider_name": "gemini",
       "credential_name": ""
     }
   ]

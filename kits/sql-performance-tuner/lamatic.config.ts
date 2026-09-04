@@ -24,6 +24,6 @@ export default {
   links: {
     github: "https://github.com/Lamatic/AgentKit/tree/main/kits/sql-performance-tuner",
     deploy:
-      "https://vercel.com/new/clone?repository-url=https://github.com/Lamatic/AgentKit&root-directory=kits%2Fsql-performance-tuner%2Fapps&env=SQL_TUNER_STRATEGIST_FLOW_ID,SQL_TUNER_REVIEWER_FLOW_ID,LAMATIC_API_URL,LAMATIC_PROJECT_ID,LAMATIC_API_KEY",
+      "https://vercel.com/new/clone?repository-url=https://github.com/Lamatic/AgentKit&root-directory=kits%2Fsql-performance-tuner%2Fapps&env=SQL_TUNER_STRATEGIST_FLOW_ID,SQL_TUNER_REVIEWER_FLOW_ID,LAMATIC_API_URL,LAMATIC_PROJECT_ID,LAMATIC_API_KEY,SQL_TUNER_ALLOW_LIVE",
   },
 };

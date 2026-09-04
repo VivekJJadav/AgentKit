@@ -1,9 +1,161 @@
 import type { TableSchema } from "./contracts";
 import { MAX_QUERY_CHARACTERS } from "./contracts";
 
-const FORBIDDEN_QUERY_TOKENS = /\b(?:attach|detach|pragma|vacuum|insert|update|delete|replace|drop|alter|create|reindex|analyze|load_extension)\b/i;
-const NONDETERMINISTIC_TOKENS = /\b(?:random|randomblob|current_timestamp|current_date|current_time)\b|datetime\s*\(\s*['"]now['"]/i;
+const FORBIDDEN_QUERY_TOKENS = new Set([
+  "ATTACH", "DETACH", "PRAGMA", "VACUUM", "INSERT", "UPDATE", "DELETE", "REPLACE",
+  "DROP", "ALTER", "CREATE", "REINDEX", "ANALYZE", "LOAD_EXTENSION",
+]);
+const NONDETERMINISTIC_TOKENS = new Set([
+  "RANDOM", "RANDOMBLOB", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME",
+]);
 const SIMPLE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+type SqlToken = {
+  kind: "word" | "string" | "symbol";
+  value: string;
+  depth: number;
+};
+
+const SELECT_BOUNDARIES = new Set([
+  "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "UNION", "INTERSECT", "EXCEPT",
+]);
+
+function tokenizeSql(sql: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  let depth = 0;
+  let index = 0;
+
+  while (index < sql.length) {
+    const character = sql[index];
+    if (/\s/.test(character)) {
+      index += 1;
+      continue;
+    }
+    if (character === "-" && sql[index + 1] === "-") {
+      throw new Error("SQL comments are not accepted.");
+    }
+    if (character === "/" && sql[index + 1] === "*") {
+      throw new Error("SQL comments are not accepted.");
+    }
+    if (character === "'") {
+      let value = "";
+      index += 1;
+      let closed = false;
+      while (index < sql.length) {
+        if (sql[index] === "'" && sql[index + 1] === "'") {
+          value += "'";
+          index += 2;
+        } else if (sql[index] === "'") {
+          index += 1;
+          closed = true;
+          break;
+        } else {
+          value += sql[index];
+          index += 1;
+        }
+      }
+      if (!closed) throw new Error("The SQL query contains an unterminated string literal.");
+      tokens.push({ kind: "string", value, depth });
+      continue;
+    }
+    if (character === '"' || character === "`" || character === "[") {
+      const closing = character === "[" ? "]" : character;
+      index += 1;
+      let closed = false;
+      while (index < sql.length) {
+        if (sql[index] === closing && sql[index + 1] === closing && closing !== "]") {
+          index += 2;
+        } else if (sql[index] === closing) {
+          index += 1;
+          closed = true;
+          break;
+        } else {
+          index += 1;
+        }
+      }
+      if (!closed) throw new Error("The SQL query contains an unterminated quoted identifier.");
+      tokens.push({ kind: "word", value: "QUOTED_IDENTIFIER", depth });
+      continue;
+    }
+    if (/[A-Za-z_]/.test(character)) {
+      const start = index;
+      index += 1;
+      while (index < sql.length && /[A-Za-z0-9_$]/.test(sql[index])) index += 1;
+      tokens.push({ kind: "word", value: sql.slice(start, index).toUpperCase(), depth });
+      continue;
+    }
+    if (character === "(") {
+      tokens.push({ kind: "symbol", value: character, depth });
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (character === ")") {
+      depth -= 1;
+      if (depth < 0) throw new Error("The SQL query contains unmatched parentheses.");
+      tokens.push({ kind: "symbol", value: character, depth });
+      index += 1;
+      continue;
+    }
+    tokens.push({ kind: "symbol", value: character, depth });
+    index += 1;
+  }
+
+  if (depth !== 0) throw new Error("The SQL query contains unmatched parentheses.");
+  return tokens;
+}
+
+function hasCartesianJoin(tokens: SqlToken[]): boolean {
+  for (let selectIndex = 0; selectIndex < tokens.length; selectIndex += 1) {
+    const select = tokens[selectIndex];
+    if (select.kind !== "word" || select.value !== "SELECT") continue;
+
+    const depth = select.depth;
+    let fromIndex = -1;
+    for (let index = selectIndex + 1; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.depth < depth) break;
+      if (token.depth === depth && token.kind === "word" && token.value === "FROM") {
+        fromIndex = index;
+        break;
+      }
+    }
+    if (fromIndex < 0) continue;
+
+    let pendingJoin = false;
+    let naturalJoin = false;
+    for (let index = fromIndex + 1; index < tokens.length; index += 1) {
+      const token = tokens[index];
+      if (token.depth < depth) break;
+      if (token.depth !== depth) continue;
+      if (token.kind === "word" && SELECT_BOUNDARIES.has(token.value)) break;
+      if (token.kind === "symbol" && token.value === ",") return true;
+      if (token.kind !== "word") continue;
+      if (token.value === "CROSS") return true;
+      if (token.value === "NATURAL") naturalJoin = true;
+      if (token.value === "JOIN") {
+        if (pendingJoin) return true;
+        pendingJoin = !naturalJoin;
+        naturalJoin = false;
+      } else if (pendingJoin && (token.value === "ON" || token.value === "USING")) {
+        pendingJoin = false;
+      }
+    }
+    if (pendingJoin) return true;
+  }
+  return false;
+}
+
+function hasNondeterministicCall(tokens: SqlToken[]): boolean {
+  return tokens.some((token, index) => {
+    if (token.kind !== "word") return false;
+    if (NONDETERMINISTIC_TOKENS.has(token.value)) return true;
+    return token.value === "DATETIME"
+      && tokens[index + 1]?.value === "("
+      && tokens[index + 2]?.kind === "string"
+      && tokens[index + 2]?.value.toLowerCase() === "now";
+  });
+}
 
 function withoutTrailingSemicolon(sql: string): string {
   return sql.trim().replace(/;\s*$/, "").trim();
@@ -14,13 +166,23 @@ export function validateReadOnlyQuery(sql: string): string {
 
   if (!query) throw new Error("Enter a SQL query.");
   if (query.length > MAX_QUERY_CHARACTERS) throw new Error("The query is too large for this bounded runner.");
-  if (/--|\/\*/.test(query)) throw new Error("SQL comments are not accepted.");
-
+  const tokens = tokenizeSql(query);
   const normalized = withoutTrailingSemicolon(query);
-  if (normalized.includes(";")) throw new Error("Only one SQL statement is allowed.");
-  if (!/^(?:select|with)\b/i.test(normalized)) throw new Error("Only SELECT and WITH queries are allowed.");
-  if (FORBIDDEN_QUERY_TOKENS.test(normalized)) throw new Error("The query contains a blocked database operation.");
-  if (NONDETERMINISTIC_TOKENS.test(normalized)) throw new Error("Non-deterministic SQL functions cannot be compared safely.");
+  const semicolons = tokens.filter((token) => token.depth === 0 && token.value === ";");
+  if (semicolons.length > 1 || (semicolons.length === 1 && tokens.at(-1)?.value !== ";")) {
+    throw new Error("Only one SQL statement is allowed.");
+  }
+  const first = tokens[0]?.value;
+  if (first !== "SELECT" && first !== "WITH") throw new Error("Only SELECT and WITH queries are allowed.");
+  if (tokens.some((token) => token.kind === "word" && FORBIDDEN_QUERY_TOKENS.has(token.value))) {
+    throw new Error("The query contains a blocked database operation.");
+  }
+  if (hasNondeterministicCall(tokens)) {
+    throw new Error("Non-deterministic SQL functions cannot be compared safely.");
+  }
+  if ((first === "WITH" && tokens[1]?.value === "RECURSIVE") || hasCartesianJoin(tokens)) {
+    throw new Error("Recursive CTEs and Cartesian joins are not accepted by this bounded runner.");
+  }
 
   return normalized;
 }

@@ -47,7 +47,9 @@ An experiment contains:
 - `adaptation.differsFromPrevious`: why this candidate is not a repetition.
 - `adaptation.respondsToExperiment`: the prior experiment number that prompted
   the pivot, when applicable.
-- `stopConditions`: concrete evidence that should end this line of inquiry.
+- `stopConditions`: operator-facing criteria for ending this line of inquiry.
+  The runtime records these in the evidence trail while independently enforcing
+  safety, equivalence, and the `1.10x` threshold.
 
 ### Conclusion action
 
@@ -59,8 +61,10 @@ A conclusion contains:
 - `reasoning`: why another experiment is not worthwhile.
 - `evidenceUsed`: experiment numbers supporting the decision.
 
-The runtime rejects malformed output, duplicate SQL, unknown identifiers, and
-unsafe operations. A model decision is a proposal, never proof.
+The runtime rejects malformed output, duplicate SQL or identical index column
+ordering, unknown identifiers, and unsafe operations. Different index column
+orders remain distinct because order changes SQLite access behavior. A model
+decision is a proposal, never proof.
 
 ## Adaptation rules
 

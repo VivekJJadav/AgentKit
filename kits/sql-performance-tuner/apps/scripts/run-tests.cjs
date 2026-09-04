@@ -18,6 +18,8 @@ require.extensions[".ts"] = (module, filename) => {
 const { AGENT_CONTRACT_VERSION, strategistInputSchema } = require("../lib/contracts.ts");
 const { DEMO_QUERY } = require("../lib/demo-database.ts");
 const { chooseNextExperiment, normalizeReviewerOutput } = require("../lib/planner.ts");
+const { checkLocalRateLimit } = require("../lib/rate-limit.ts");
+const { validateReadOnlyQuery } = require("../lib/sql-safety.ts");
 const { selectWinningExperiment, tuneQuery, tuneQueryWithDependencies } = require("../lib/tuner.ts");
 
 const benchmark = {
@@ -217,8 +219,19 @@ async function main() {
     chooseNextExperiment: duplicatePlanner.chooseNextExperiment,
     reviewTuningOutcome: reviewer(),
   });
-  assert.equal(duplicatePlanner.calls, 2);
-  assert.equal(duplicateReport.experiments.length, 1, "Duplicate SQL or equivalent index ordering should not execute twice.");
+  assert.equal(duplicatePlanner.calls, 3);
+  assert.equal(duplicateReport.experiments.length, 2, "Different index column orders must be evaluated independently.");
+
+  const exactDuplicatePlanner = plannerFrom((_input, call) => decision({
+    indexSql: call === 1
+      ? "CREATE INDEX idx_orders_first ON orders(created_at, customer_id, total);"
+      : "CREATE INDEX idx_orders_second ON orders(created_at, customer_id, total);",
+  }));
+  const exactDuplicateReport = await tuneQueryWithDependencies(DEMO_QUERY, "demo", {
+    chooseNextExperiment: exactDuplicatePlanner.chooseNextExperiment,
+    reviewTuningOutcome: reviewer(),
+  });
+  assert.equal(exactDuplicateReport.experiments.length, 1, "Equivalent index column ordering should execute only once.");
 
   const nonEquivalentPlanner = plannerFrom((_input, call) => call === 1
     ? decision({
@@ -260,7 +273,7 @@ async function main() {
     contractVersion: AGENT_CONTRACT_VERSION,
     originalQuery: DEMO_QUERY,
     baseline,
-    experiments: [],
+    experiments: duplicateReport.experiments,
     deterministicOutcome: "no-proven-improvement",
   };
   assert.throws(
@@ -270,7 +283,7 @@ async function main() {
       evidenceSummary: "Contradiction.",
       recommendation: "Use a candidate.",
       limitationsText: "Fixture.",
-      citedExperimentsCsv: "1",
+      citedExperimentsCsv: "3",
     }, reviewInput),
     /contradicted/,
     "Reviewer cannot contradict deterministic outcome.",
@@ -294,11 +307,119 @@ async function main() {
       evidenceSummary: "No winner.",
       recommendation: "Keep the original query.",
       limitationsText: "Fixture.",
-      citedExperimentsCsv: "1, 2, 2, nope",
+      citedExperimentsCsv: "1, 2, 2",
     }, reviewInput).citedExperiments,
     [1, 2],
     "Reviewer CSV fields should normalize string values.",
   );
+
+  assert.throws(
+    () => normalizeReviewerOutput({
+      outcome: "no_proven_improvement",
+      headline: "No measured improvement was proven",
+      evidenceSummary: "No winner.",
+      recommendation: "Keep the original query.",
+      limitationsText: "Fixture.",
+      citedExperimentsCsv: "1, nope",
+    }, reviewInput),
+    /malformed/,
+    "Malformed reviewer citations must be rejected.",
+  );
+
+  assert.throws(
+    () => normalizeReviewerOutput({
+      outcome: "no_proven_improvement",
+      headline: "No measured improvement was proven",
+      evidenceSummary: "No winner.",
+      recommendation: "Use an unrelated experiment.",
+      limitationsText: "Fixture.",
+      citedExperimentsCsv: "3",
+    }, reviewInput),
+    /not supplied/,
+    "Reviewer citations must refer to supplied experiments.",
+  );
+
+  assert.throws(
+    () => validateReadOnlyQuery("WITH RECURSIVE counter(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM counter) SELECT x FROM counter"),
+    /Recursive CTEs/,
+  );
+  assert.throws(() => validateReadOnlyQuery("SELECT * FROM orders CROSS JOIN orders AS other"), /Cartesian joins/);
+  assert.throws(() => validateReadOnlyQuery("SELECT * FROM orders, orders AS other"), /Cartesian joins/);
+  assert.throws(
+    () => validateReadOnlyQuery(
+      "SELECT * FROM orders WHERE customer_id IN (SELECT first.customer_id FROM orders AS first, orders AS second)",
+    ),
+    /Cartesian joins/,
+    "Cartesian joins in nested queries must be rejected.",
+  );
+  assert.throws(
+    () => validateReadOnlyQuery("SELECT * FROM orders JOIN orders AS other"),
+    /Cartesian joins/,
+    "JOIN without ON or USING must be rejected.",
+  );
+  assert.doesNotThrow(() => validateReadOnlyQuery("SELECT * FROM orders JOIN customers ON customers.id = orders.customer_id"));
+  assert.doesNotThrow(
+    () => validateReadOnlyQuery("SELECT 'comma, JOIN, DROP TABLE -- text' AS note FROM orders"),
+    "Keywords and punctuation inside literals must not affect structural validation.",
+  );
+  assert.doesNotThrow(
+    () => validateReadOnlyQuery(
+      "SELECT * FROM (SELECT customer_id, total FROM orders) AS filtered JOIN customers ON customers.id = filtered.customer_id",
+    ),
+    "Commas in nested SELECT lists must not be mistaken for Cartesian joins.",
+  );
+
+  const localLimitKey = `test-${Date.now()}`;
+  for (let request = 0; request < 5; request += 1) {
+    assert.equal(checkLocalRateLimit(localLimitKey, 1_000).allowed, true);
+  }
+  assert.deepEqual(
+    checkLocalRateLimit(localLimitKey, 1_000),
+    { allowed: false, retryAfterSeconds: 60 },
+    "The local development limiter must reject requests over the window limit.",
+  );
+  assert.equal(
+    checkLocalRateLimit(localLimitKey, 61_001).allowed,
+    true,
+    "Expired local rate-limit entries must be removed and reset.",
+  );
+
+  let receivedSignal;
+  const abortController = new AbortController();
+  const cancellationPlanner = plannerFrom((_input, _call, _mode) => {
+    receivedSignal = abortController.signal;
+    abortController.abort();
+    return decision();
+  });
+  const cancelledReport = await tuneQueryWithDependencies(DEMO_QUERY, "demo", {
+    chooseNextExperiment: async (mode, input, signal) => {
+      receivedSignal = signal;
+      abortController.abort();
+      return cancellationPlanner.chooseNextExperiment(mode, input);
+    },
+    reviewTuningOutcome: reviewer(),
+  }, undefined, abortController.signal);
+  assert.equal(receivedSignal, abortController.signal, "The request abort signal must reach planner calls.");
+  assert.match(cancelledReport.conclusion, /cancelled/i);
+
+  const reviewerFailurePlanner = plannerFrom((input, call) => call === 1
+    ? decision()
+    : {
+      contractVersion: AGENT_CONTRACT_VERSION,
+      action: "conclude",
+      strategy: "conclude",
+      conclusionCode: "no_safe_distinct_experiment",
+      reasoning: "One experiment is enough for this fixture.",
+      evidenceUsed: input.experiments.map((item) => item.number),
+    });
+  const reviewerFailure = await tuneQueryWithDependencies(DEMO_QUERY, "demo", {
+    chooseNextExperiment: reviewerFailurePlanner.chooseNextExperiment,
+    reviewTuningOutcome: async () => {
+      throw new Error("Reviewer unavailable.");
+    },
+  });
+  assert.equal(reviewerFailure.status, "failed");
+  assert.ok(reviewerFailure.experiments.length > 0, "Completed evidence must survive a reviewer failure.");
 
   const demoReport = await tuneQuery(DEMO_QUERY, "demo");
   assert.ok(demoReport.review, "Demo tuning should return reviewer output.");

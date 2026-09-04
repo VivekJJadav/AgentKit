@@ -100,6 +100,7 @@ export const experimentEvidenceSchema = z.object({
   equivalence: z.boolean().optional(),
   speedup: z.number().positive().optional(),
   adaptation: adaptationSchema.optional(),
+  stopConditions: z.array(z.string().min(1).max(300)).min(1).max(4).optional(),
 });
 export type ExperimentEvidence = z.infer<typeof experimentEvidenceSchema>;
 
@@ -248,16 +249,6 @@ export const reviewerOutputSchema = z.object({
   citedExperiments: z.array(z.number().int().positive()).max(MAX_EXPERIMENTS),
 });
 export type ReviewerOutput = z.infer<typeof reviewerOutputSchema>;
-
-export const tuningStatusSchema = z.enum([
-  "validating",
-  "benchmarking-baseline",
-  "planning",
-  "running-experiment",
-  "complete",
-  "failed",
-]);
-export type TuningStatus = z.infer<typeof tuningStatusSchema>;
 
 export const tuningReportSchema = z.object({
   status: z.enum(["improved", "no-proven-improvement", "invalid-input", "failed"]),

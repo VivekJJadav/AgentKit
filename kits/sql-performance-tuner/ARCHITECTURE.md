@@ -104,10 +104,11 @@ strategist flow and a final reviewer flow.
 
 The agent has two mandatory Lamatic flows:
 
-- `sql-tuner-strategist` diagnoses evidence and chooses the next experiment or
-  concludes. The application invokes it once per loop iteration.
-- `sql-tuner-reviewer` explains the complete measured evidence after the
-  application has selected the winner deterministically.
+- `sql-tuner-strategist` runs an Evidence Analyst followed by an Experiment
+  Strategist, which chooses the next experiment or concludes. The application
+  invokes the flow once per loop iteration.
+- `sql-tuner-reviewer` runs an Evidence Synthesizer followed by a Final Reviewer
+  after the application has selected the winner deterministically.
 
 ### Input
 
@@ -208,12 +209,13 @@ All SQL is untrusted, including model output.
 - Reject comments, multiple statements, DML, dangerous pragmas, attachments,
   extension loading, and schema changes other than the isolated temporary
   index.
-- Reject unbounded Cartesian joins and nondeterministic functions.
+- Reject recursive CTEs, Cartesian joins, and nondeterministic functions.
 - Limit uploaded databases to 4 MB and also limit result rows, query length,
   experiment count, and request duration.
 - Run every candidate in a fresh in-memory database; never mutate the base
   snapshot.
-- Keep Lamatic credentials server-side.
+- Keep Lamatic credentials server-side. Public live requests require a separate
+  distributed rate limiter and are rate-limited per client address.
 
 The guard combines conservative statement normalization, explicit token and
 operation allowlists, identifier validation against derived schema metadata,
@@ -241,11 +243,13 @@ kits/sql-performance-tuner/
     lib/contracts.ts
     lib/demo-database.ts
     lib/planner.ts
+    lib/rate-limit.ts
     lib/sql-safety.ts
     lib/sqlite-engine.ts
     lib/tuner.ts
     scripts/check-contracts.mjs
     scripts/run-tests.cjs
+    vercel.json
 ```
 
 `contracts.ts` is the single source of truth across the orchestrator, planner,
@@ -258,7 +262,9 @@ The first screen is the working tuner, not a landing page. It contains:
 - A demo/live mode control.
 - A bundled-demo selector or SQLite file input, plus a derived schema summary
   and editable SQL input.
-- A Run button with progress and cancellation states.
+- Run and Stop request controls. Stopping aborts the browser request and the
+  active Lamatic network call. Synchronous SQLite work observes cancellation
+  between bounded local operations.
 - Baseline plan and timing.
 - A chronological experiment trail distinguishing Lamatic strategist decisions,
   deterministic local measurements, and plan/timing verdicts.

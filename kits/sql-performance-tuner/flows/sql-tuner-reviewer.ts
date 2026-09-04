@@ -26,6 +26,28 @@ export const meta = {
 
 // -- Inputs --
 export const inputs = {
+  "InstructorLLMNode_201": [
+    {
+      "name": "generativeModelName",
+      "label": "Generative Model Name",
+      "type": "model",
+      "modelType": "generator/text",
+      "mode": "instructor",
+      "description": "Select the model that synthesizes deterministic tuning evidence.",
+      "required": true,
+      "isPrivate": true,
+      "defaultValue": [
+        {
+          "configName": "configA",
+          "type": "generator/text",
+          "provider_name": "gemini",
+          "credential_name": "",
+          "params": { "temperature": 0.1 }
+        }
+      ],
+      "typeOptions": { "loadOptionsMethod": "listModels" }
+    }
+  ],
   "InstructorLLMNode_202": [
     {
       "name": "generativeModelName",
@@ -40,7 +62,7 @@ export const inputs = {
         {
           "configName": "configA",
           "type": "generator/text",
-          "provider_name": "groq",
+          "provider_name": "gemini",
           "credential_name": "",
           "params": {}
         }
@@ -58,10 +80,13 @@ export const references = {
     "default": "@constitutions/default.md"
   },
   "prompts": {
+    "sql_tuner_synthesizer_system": "@prompts/sql-tuner-reviewer_instructor-llmnode-201_system_0.md",
+    "sql_tuner_synthesizer_user": "@prompts/sql-tuner-reviewer_instructor-llmnode-201_user_1.md",
     "sql_tuner_reviewer_system": "@prompts/sql-tuner-reviewer_instructor-llmnode-202_system_0.md",
     "sql_tuner_reviewer_user": "@prompts/sql-tuner-reviewer_instructor-llmnode-202_user_1.md"
   },
   "modelConfigs": {
+    "sql_tuner_synthesizer_model": "@model-configs/sql-tuner-reviewer_instructor-llmnode-201_generative-model-name.ts",
     "sql_tuner_reviewer_model": "@model-configs/sql-tuner-reviewer_instructor-llmnode-202_generative-model-name.ts"
   }
 };
@@ -86,7 +111,7 @@ export const nodes = [
     }
   },
   {
-    "id": "InstructorLLMNode_202",
+    "id": "InstructorLLMNode_201",
     "type": "dynamicNode",
     "position": {
       "x": 320,
@@ -95,7 +120,39 @@ export const nodes = [
     "data": {
       "nodeId": "InstructorLLMNode",
       "values": {
-        "nodeName": "Generate Reviewer Explanation",
+        "nodeName": "Evidence Synthesizer",
+        "tools": [],
+        "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"outcome\": { \"type\": \"string\", \"enum\": [\"improved\", \"no_proven_improvement\"], \"required\": true },\n    \"baselineSummary\": { \"type\": \"string\", \"required\": true },\n    \"experimentLessons\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"winningSql\": { \"type\": \"string\" },\n    \"limitationsText\": { \"type\": \"string\", \"required\": true },\n    \"citedExperimentsCsv\": { \"type\": \"string\" }\n  }\n}",
+        "prompts": [
+          {
+            "id": "sql-tuner-synthesizer-system",
+            "role": "system",
+            "content": "@prompts/sql-tuner-reviewer_instructor-llmnode-201_system_0.md"
+          },
+          {
+            "id": "sql-tuner-synthesizer-user",
+            "role": "user",
+            "content": "@prompts/sql-tuner-reviewer_instructor-llmnode-201_user_1.md"
+          }
+        ],
+        "memories": "[]",
+        "messages": "[]",
+        "attachments": "",
+        "generativeModelName": "@model-configs/sql-tuner-reviewer_instructor-llmnode-201_generative-model-name.ts"
+      }
+    }
+  },
+  {
+    "id": "InstructorLLMNode_202",
+    "type": "dynamicNode",
+    "position": {
+      "x": 640,
+      "y": 0
+    },
+    "data": {
+      "nodeId": "InstructorLLMNode",
+      "values": {
+        "nodeName": "Final Reviewer",
         "tools": [],
         "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"outcome\": { \"type\": \"string\", \"enum\": [\"improved\", \"no_proven_improvement\"], \"required\": true },\n    \"headline\": { \"type\": \"string\", \"required\": true },\n    \"evidenceSummary\": { \"type\": \"string\", \"required\": true },\n    \"recommendation\": { \"type\": \"string\", \"required\": true },\n    \"limitationsText\": { \"type\": \"string\", \"required\": true },\n    \"citedExperimentsCsv\": { \"type\": \"string\" }\n  }\n}",
         "prompts": [
@@ -121,7 +178,7 @@ export const nodes = [
     "id": "graphqlResponseNode_202",
     "type": "dynamicNode",
     "position": {
-      "x": 640,
+      "x": 960,
       "y": 0
     },
     "data": {
@@ -136,8 +193,16 @@ export const nodes = [
 
 export const edges = [
   {
-    "id": "triggerNode_1-InstructorLLMNode_202",
+    "id": "triggerNode_1-InstructorLLMNode_201",
     "source": "triggerNode_1",
+    "target": "InstructorLLMNode_201",
+    "sourceHandle": "bottom",
+    "targetHandle": "top",
+    "type": "defaultEdge"
+  },
+  {
+    "id": "InstructorLLMNode_201-InstructorLLMNode_202",
+    "source": "InstructorLLMNode_201",
     "target": "InstructorLLMNode_202",
     "sourceHandle": "bottom",
     "targetHandle": "top",

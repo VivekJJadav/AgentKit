@@ -1,9 +1,3 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "functions": {
-    "app/api/tune/route.ts": {
-      "maxDuration": 300,
-      "supportsCancellation": true
-    }
-  }
+  "$schema": "https://openapi.vercel.sh/vercel.json"
 }

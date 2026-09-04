@@ -16,6 +16,52 @@ import {
 
 let client: Lamatic | undefined;
 
+const MAX_UPSTREAM_LOG_MESSAGE_LENGTH = 500;
+
+function sanitizeUpstreamMessage(value: string): string {
+  return value
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(
+      /((?:authorization|api[-_ ]?key|access[-_ ]?token|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/\b(?:SELECT|WITH|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\b[\s\S]*/i, "[SQL REDACTED]")
+    .trim()
+    .slice(0, MAX_UPSTREAM_LOG_MESSAGE_LENGTH);
+}
+
+function upstreamErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  const errors = Array.isArray(record.errors) ? record.errors : [];
+  const firstError = errors[0];
+  if (firstError && typeof firstError === "object" && !Array.isArray(firstError)) {
+    const message = (firstError as Record<string, unknown>).message;
+    if (typeof message === "string") return sanitizeUpstreamMessage(message);
+  }
+  for (const key of ["message", "error"]) {
+    if (typeof record[key] === "string") return sanitizeUpstreamMessage(record[key]);
+  }
+  return undefined;
+}
+
+function logUpstreamFailure(
+  flowName: string,
+  response: Response,
+  message: string,
+): void {
+  console.error("[Lamatic upstream request failed]", {
+    flow: flowName,
+    httpStatus: response.status,
+    httpStatusText: response.statusText,
+    requestId: response.headers.get("x-request-id")
+      ?? response.headers.get("x-lamatic-request-id")
+      ?? response.headers.get("cf-ray")
+      ?? undefined,
+    message: sanitizeUpstreamMessage(message),
+  });
+}
+
 function unwrapFlowResult(value: unknown): unknown {
   let current = value;
   for (let depth = 0; depth < 5; depth += 1) {
@@ -77,9 +123,17 @@ async function executeLiveFlow(
   try {
     payload = JSON.parse(responseText);
   } catch {
+    logUpstreamFailure(flowName, response, "Lamatic returned a non-JSON response.");
     throw new Error(`Lamatic ${flowName} request returned invalid JSON.`);
   }
-  if (!response.ok) throw new Error(`Lamatic ${flowName} request failed with HTTP ${response.status}.`);
+  if (!response.ok) {
+    logUpstreamFailure(
+      flowName,
+      response,
+      upstreamErrorMessage(payload) ?? "Lamatic returned no structured error message.",
+    );
+    throw new Error(`Lamatic ${flowName} request failed with HTTP ${response.status}.`);
+  }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error(`Lamatic ${flowName} request returned an invalid response.`);
   }
@@ -89,13 +143,21 @@ async function executeLiveFlow(
   };
   if (graphqlResponse.errors?.length) {
     const message = graphqlResponse.errors[0]?.message;
+    logUpstreamFailure(
+      flowName,
+      response,
+      typeof message === "string" ? message : "Lamatic returned an unknown GraphQL error.",
+    );
     throw new Error(`Lamatic ${flowName} request failed: ${typeof message === "string" ? message : "Unknown error."}`);
   }
   const raw = graphqlResponse.data?.executeWorkflow;
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const response = raw as unknown as Record<string, unknown>;
-    if (response.status === "error" || response.result === null) {
-      const message = typeof response.message === "string" ? response.message : "Lamatic returned an empty result.";
+    const flowResponse = raw as unknown as Record<string, unknown>;
+    if (flowResponse.status === "error" || flowResponse.result === null) {
+      const message = typeof flowResponse.message === "string"
+        ? flowResponse.message
+        : "Lamatic returned an empty result.";
+      logUpstreamFailure(flowName, response, message);
       throw new Error(`Lamatic ${flowName} request failed: ${message}`);
     }
   }

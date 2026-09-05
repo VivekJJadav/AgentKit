@@ -18,6 +18,7 @@ require.extensions[".ts"] = (module, filename) => {
 const {
   AGENT_CONTRACT_VERSION,
   MAX_REQUEST_BODY_BYTES,
+  MAX_RESULT_BYTES,
   strategistInputSchema,
 } = require("../lib/contracts.ts");
 const { createDemoDatabase, DEMO_QUERY } = require("../lib/demo-database.ts");
@@ -27,11 +28,16 @@ const {
   checkRedisRateLimit,
   RateLimitConfigurationError,
 } = require("../lib/rate-limit.ts");
-const { readBoundedJsonBody, RequestBodyTooLargeError } = require("../lib/request-body.ts");
+const {
+  InvalidRequestBodyError,
+  readBoundedJsonBody,
+  RequestBodyTooLargeError,
+} = require("../lib/request-body.ts");
 const { queryHasExplicitOrder, validateReadOnlyQuery } = require("../lib/sql-safety.ts");
 const { getSqlJs } = require("../lib/sqlite-engine.ts");
 const { runSqlWorkerTask } = require("../lib/sql-worker.ts");
 const { selectWinningExperiment, tuneQuery, tuneQueryWithDependencies } = require("../lib/tuner.ts");
+const { POST } = require("../app/api/tune/route.ts");
 
 const benchmark = {
   warmupRuns: 1,
@@ -160,6 +166,30 @@ async function main() {
     RequestBodyTooLargeError,
     "Oversized declared bodies must be rejected before parsing.",
   );
+  await assert.rejects(
+    readBoundedJsonBody(new Request("http://localhost/api/tune", {
+      method: "POST",
+      body: "{not-json}",
+    })),
+    InvalidRequestBodyError,
+    "Malformed JSON must be classified as invalid input.",
+  );
+  await assert.rejects(
+    readBoundedJsonBody(new Request("http://localhost/api/tune", {
+      method: "POST",
+      body: new Uint8Array([0xc3, 0x28]),
+    })),
+    InvalidRequestBodyError,
+    "Invalid UTF-8 must be classified as invalid input.",
+  );
+  assert.equal((await POST(new Request("http://localhost/api/tune", {
+    method: "POST",
+    body: "{not-json}",
+  }))).status, 400, "Malformed JSON must return HTTP 400.");
+
+  const globalStyles = fs.readFileSync(`${__dirname}/../app/globals.css`, "utf8");
+  assert.match(globalStyles, /\.source-chip:focus-within\s*\{/);
+  assert.match(globalStyles, /\.editor-wrap:focus-within\s*\{/);
   const firstProposal = await chooseNextExperiment("demo", firstInput);
   assert.equal(firstProposal.action, "create_index", "No previous experiments should produce a safe first proposal.");
   assert.equal(firstProposal.strategy, "filter_first_index");
@@ -479,6 +509,11 @@ async function main() {
     );
   }
   assert.doesNotThrow(() => validateReadOnlyQuery("SELECT date('2026-01-01')"));
+  assert.throws(
+    () => validateReadOnlyQuery("SELECT zeroblob(67108864)"),
+    /Result-expanding SQL functions/,
+    "Unbounded single-cell result constructors must be rejected before execution.",
+  );
   assert.equal(queryHasExplicitOrder("SELECT 'order by', id FROM orders"), false);
   assert.equal(queryHasExplicitOrder("SELECT * FROM (SELECT id FROM orders ORDER BY id)"), false);
   assert.equal(queryHasExplicitOrder("SELECT id FROM orders ORDER BY id"), true);
@@ -552,6 +587,17 @@ async function main() {
       "Redis calls need an independent deadline.",
     );
 
+    global.fetch = async (_url, options) => new Response(new ReadableStream({
+      start(controller) {
+        options.signal.addEventListener("abort", () => controller.error(options.signal.reason), { once: true });
+      },
+    }), { status: 200 });
+    await assert.rejects(
+      checkRedisRateLimit("test-client", undefined, 5),
+      /timed out/,
+      "The Redis deadline must remain active while its response body is parsed.",
+    );
+
     let redisFetchOptions;
     global.fetch = async (_url, options) => {
       redisFetchOptions = options;
@@ -579,6 +625,24 @@ async function main() {
     }, undefined, 1),
     /safety deadline/,
     "SQLite work must be terminable by a server-side deadline.",
+  );
+
+  const resultLimitDatabase = new SQL.Database();
+  resultLimitDatabase.run("CREATE TABLE payloads(value BLOB NOT NULL)");
+  resultLimitDatabase.run(
+    "INSERT INTO payloads(value) VALUES (?)",
+    [new Uint8Array(Math.floor(MAX_RESULT_BYTES / 3))],
+  );
+  const resultLimitDatabaseBytes = resultLimitDatabase.export();
+  resultLimitDatabase.close();
+  await assert.rejects(
+    runSqlWorkerTask({
+      databaseBytes: resultLimitDatabaseBytes,
+      query: "SELECT value FROM payloads UNION ALL SELECT value FROM payloads",
+      ordered: false,
+    }),
+    /byte safety limit/,
+    "Repeated large cells must be stopped by the serialized-result byte limit.",
   );
 
   let receivedSignal;

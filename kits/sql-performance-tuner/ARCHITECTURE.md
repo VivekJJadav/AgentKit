@@ -213,8 +213,11 @@ All SQL is untrusted, including model output.
   extension loading, and schema changes other than the isolated temporary
   index.
 - Reject recursive CTEs, Cartesian joins, and nondeterministic functions.
-- Limit uploaded databases to 4 MB and also limit result rows, query length,
-  experiment count, and request duration.
+- Limit uploaded databases and serialized result evidence to 4 MB, and also
+  limit result rows, query length, experiment count, and request duration.
+- Reject unbounded result-expansion functions before execution, then enforce
+  byte limits while inspecting and benchmarking results inside a memory-limited
+  worker.
 - Run every candidate in a fresh in-memory database; never mutate the base
   snapshot.
 - Keep Lamatic credentials server-side. Public live requests require a separate

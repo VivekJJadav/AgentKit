@@ -88,9 +88,9 @@ export async function checkRedisRateLimit(
     "local ttl = redis.call('PTTL', KEYS[1])",
     "return {current, ttl}",
   ].join("\n");
-  let response: Response;
+  let payload: { result?: unknown };
   try {
-    response = await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
@@ -101,6 +101,8 @@ export async function checkRedisRateLimit(
       redirect: "error",
       signal: combinedSignal,
     });
+    if (!response.ok) throw new Error(`Rate-limit service returned HTTP ${response.status}.`);
+    payload = await response.json() as { result?: unknown };
   } catch (error) {
     if (deadlineController.signal.aborted && !signal?.aborted) {
       throw new Error("Rate-limit service timed out.");
@@ -109,9 +111,6 @@ export async function checkRedisRateLimit(
   } finally {
     clearTimeout(deadlineTimer);
   }
-  if (!response.ok) throw new Error(`Rate-limit service returned HTTP ${response.status}.`);
-
-  const payload = await response.json() as { result?: unknown };
   if (!Array.isArray(payload.result) || payload.result.length !== 2) {
     throw new Error("Rate-limit service returned an invalid response.");
   }

@@ -3,7 +3,11 @@ import { z } from "zod";
 
 import { MAX_DATABASE_BYTES, MAX_QUERY_CHARACTERS, runModeSchema } from "../../../lib/contracts";
 import { checkLiveRateLimit, RateLimitConfigurationError } from "../../../lib/rate-limit";
-import { readBoundedJsonBody, RequestBodyTooLargeError } from "../../../lib/request-body";
+import {
+  InvalidRequestBodyError,
+  readBoundedJsonBody,
+  RequestBodyTooLargeError,
+} from "../../../lib/request-body";
 import { tuneQuery } from "../../../lib/tuner";
 
 export const runtime = "nodejs";
@@ -53,6 +57,12 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { status: "invalid-input", conclusion: error.message, experiments: [] },
         { status: 413 },
+      );
+    }
+    if (error instanceof InvalidRequestBodyError) {
+      return NextResponse.json(
+        { status: "invalid-input", conclusion: error.message, experiments: [] },
+        { status: 400 },
       );
     }
     if (error instanceof RateLimitConfigurationError) {

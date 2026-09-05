@@ -6,6 +6,7 @@ export const MAX_QUERY_CHARACTERS = 12_000;
 // needs room for the query and JSON escaping while remaining strictly bounded.
 export const MAX_REQUEST_BODY_BYTES = 6 * 1024 * 1024;
 export const MAX_RESULT_ROWS = 10_000;
+export const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 export const MAX_EXPERIMENTS = 5;
 export const BENCHMARK_WARMUP_RUNS = 1;
 export const BENCHMARK_MEASURED_RUNS = 5;

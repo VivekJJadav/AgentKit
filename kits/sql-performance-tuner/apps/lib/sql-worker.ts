@@ -4,14 +4,18 @@ import { Worker } from "node:worker_threads";
 import {
   BENCHMARK_MEASURED_RUNS,
   BENCHMARK_WARMUP_RUNS,
+  MAX_DATABASE_BYTES,
+  MAX_RESULT_BYTES,
   MAX_RESULT_ROWS,
   type Benchmark,
   type QueryPlanStep,
   type QueryResult,
   type TableSchema,
 } from "./contracts";
+import { validateReadOnlyQuery } from "./sql-safety";
 
 export const SQL_EXECUTION_TIMEOUT_MS = 5_000;
+export const SQL_WORKER_MAX_OLD_GENERATION_MB = 64;
 
 export type SqlWorkerTask = {
   databaseBytes: Uint8Array;
@@ -38,12 +42,24 @@ export function runSqlWorkerTask(
   timeoutMs = SQL_EXECUTION_TIMEOUT_MS,
 ): Promise<SqlWorkerResult> {
   if (signal?.aborted) return Promise.reject(new Error("The tuning request was cancelled."));
+  if (task.databaseBytes.byteLength > MAX_DATABASE_BYTES) {
+    return Promise.reject(new Error("SQLite uploads are limited to 4 MB."));
+  }
+  const query = validateReadOnlyQuery(task.query);
 
   return new Promise((resolve, reject) => {
     const worker = new Worker(join(process.cwd(), "lib", "sql-worker.cjs"), {
+      resourceLimits: {
+        maxOldGenerationSizeMb: SQL_WORKER_MAX_OLD_GENERATION_MB,
+        maxYoungGenerationSizeMb: 16,
+        codeRangeSizeMb: 16,
+        stackSizeMb: 4,
+      },
       workerData: {
         ...task,
+        query,
         databaseBytes: Uint8Array.from(task.databaseBytes),
+        maxResultBytes: MAX_RESULT_BYTES,
         maxResultRows: MAX_RESULT_ROWS,
         warmupRuns: BENCHMARK_WARMUP_RUNS,
         measuredRuns: BENCHMARK_MEASURED_RUNS,

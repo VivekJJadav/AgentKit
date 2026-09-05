@@ -8,29 +8,77 @@ function canonicalCell(value) {
   return value;
 }
 
+function jsonStringByteLength(value) {
+  let bytes = Buffer.byteLength(value, "utf8") + 2;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) bytes += 1;
+    else if (code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) bytes += 1;
+    else if (code < 0x20) bytes += 5;
+  }
+  return bytes;
+}
+
+function serializedCellByteLength(value) {
+  if (value instanceof Uint8Array) return (value.byteLength * 2) + 2;
+  if (typeof value === "string") return jsonStringByteLength(value);
+  return Buffer.byteLength(JSON.stringify(canonicalCell(value)), "utf8");
+}
+
+function boundedRows(database, sql, collectRows) {
+  const statement = database.prepare(sql);
+  try {
+    const columns = statement.getColumnNames();
+    const rows = [];
+    let rowCount = 0;
+    let serializedBytes = Buffer.byteLength(JSON.stringify(columns), "utf8") + 2;
+
+    while (statement.step()) {
+      rowCount += 1;
+      if (rowCount > workerData.maxResultRows) {
+        return { columns, rows, rowCount, exceededRowLimit: true };
+      }
+
+      const row = statement.get();
+      const rowBytes = row.reduce(
+        (total, cell) => total + serializedCellByteLength(cell),
+        2 + Math.max(0, row.length - 1),
+      ) + (rowCount > 1 ? 1 : 0);
+      if (serializedBytes + rowBytes > workerData.maxResultBytes) {
+        throw new Error(`Query results exceed the ${workerData.maxResultBytes} byte safety limit.`);
+      }
+      serializedBytes += rowBytes;
+      if (collectRows) rows.push(JSON.stringify(row.map(canonicalCell)));
+    }
+
+    return { columns, rows, rowCount, exceededRowLimit: false };
+  } finally {
+    statement.free();
+  }
+}
+
 function firstResult(database, sql, maxRows) {
   const results = database.exec(sql, { maxRows });
   return results[0] || { columns: [], values: [] };
 }
 
 function inspectResult(database, sql) {
-  const result = firstResult(database, sql, workerData.maxResultRows + 1);
-  const exceededRowLimit = result.values.length > workerData.maxResultRows;
-  if (exceededRowLimit) {
+  const result = boundedRows(database, sql, true);
+  if (result.exceededRowLimit) {
     return {
       columns: result.columns,
-      rowCount: result.values.length,
+      rowCount: result.rowCount,
       ordered: workerData.ordered,
       hash: "row-limit-exceeded",
       exceededRowLimit: true,
     };
   }
 
-  const rows = result.values.map((row) => JSON.stringify(row.map(canonicalCell)));
+  const rows = result.rows;
   if (!workerData.ordered) rows.sort();
   return {
     columns: result.columns,
-    rowCount: rows.length,
+    rowCount: result.rowCount,
     ordered: workerData.ordered,
     hash: createHash("sha256").update(JSON.stringify([result.columns, rows])).digest("hex"),
     exceededRowLimit: false,
@@ -47,11 +95,11 @@ function explainQuery(database, sql) {
 }
 
 function benchmarkQuery(database, sql) {
-  for (let run = 0; run < workerData.warmupRuns; run += 1) database.exec(sql);
+  for (let run = 0; run < workerData.warmupRuns; run += 1) boundedRows(database, sql, false);
   const measuredRuns = [];
   for (let run = 0; run < workerData.measuredRuns; run += 1) {
     const startedAt = performance.now();
-    database.exec(sql);
+    boundedRows(database, sql, false);
     measuredRuns.push(Number((performance.now() - startedAt).toFixed(3)));
   }
   const sorted = [...measuredRuns].sort((left, right) => left - right);

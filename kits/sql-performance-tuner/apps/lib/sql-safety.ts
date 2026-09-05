@@ -8,6 +8,11 @@ const FORBIDDEN_QUERY_TOKENS = new Set([
 const NONDETERMINISTIC_TOKENS = new Set([
   "RANDOM", "RANDOMBLOB", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME",
 ]);
+const UNBOUNDED_RESULT_FUNCTIONS = new Set([
+  "CONCAT", "CONCAT_WS", "FORMAT", "GROUP_CONCAT", "HEX", "JSON_ARRAY",
+  "JSON_GROUP_ARRAY", "JSON_GROUP_OBJECT", "JSON_OBJECT", "JSON_QUOTE", "PRINTF",
+  "QUOTE", "REPLACE", "ZEROBLOB",
+]);
 const SIMPLE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 type SqlToken = {
@@ -267,6 +272,13 @@ export function validateReadOnlyQuery(sql: string): string {
   if (first !== "SELECT" && first !== "WITH") throw new Error("Only SELECT and WITH queries are allowed.");
   if (tokens.some((token) => token.kind === "word" && FORBIDDEN_QUERY_TOKENS.has(token.value))) {
     throw new Error("The query contains a blocked database operation.");
+  }
+  if (tokens.some((token, index) => (
+    (token.kind === "word" || token.kind === "identifier")
+    && UNBOUNDED_RESULT_FUNCTIONS.has(token.value)
+    && tokens[index + 1]?.value === "("
+  ))) {
+    throw new Error("Result-expanding SQL functions are not accepted by this bounded runner.");
   }
   if (hasNondeterministicCall(tokens)) {
     throw new Error("Non-deterministic SQL functions cannot be compared safely.");

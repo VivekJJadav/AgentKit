@@ -155,7 +155,10 @@ function hasCartesianJoin(tokens: SqlToken[]): boolean {
 }
 
 function hasNondeterministicCall(tokens: SqlToken[]): boolean {
-  if (tokens.some((token) => token.kind === "word" && NONDETERMINISTIC_TOKENS.has(token.value))) {
+  if (tokens.some((token) => (
+    (token.kind === "word" || token.kind === "identifier")
+    && NONDETERMINISTIC_TOKENS.has(token.value)
+  ))) {
     return true;
   }
 
@@ -163,7 +166,7 @@ function hasNondeterministicCall(tokens: SqlToken[]): boolean {
     "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME",
   ]);
   return tokens.some((token, index) => {
-    if (token.kind !== "word") return false;
+    if (token.kind !== "word" && token.kind !== "identifier") return false;
     if (!currentTimeFunctions.has(token.value) || tokens[index + 1]?.value !== "(") return false;
 
     const openingDepth = tokens[index + 1].depth;
@@ -190,7 +193,7 @@ function hasNondeterministicCall(tokens: SqlToken[]): boolean {
     if (argumentsList.length <= timeValueIndex) return true;
     const timeValue = argumentsList[timeValueIndex];
     return timeValue.length === 1
-      && timeValue[0].kind === "string"
+      && (timeValue[0].kind === "string" || timeValue[0].kind === "identifier")
       && ["now", "subsec", "subsecond"].includes(timeValue[0].value.toLowerCase());
   });
 }
@@ -209,7 +212,7 @@ function isIdentifier(token: SqlToken | undefined): token is SqlToken {
 
 function hasRecursiveCte(tokens: SqlToken[]): boolean {
   if (tokens[0]?.kind !== "word" || tokens[0].value !== "WITH") return false;
-  let index = tokens[1]?.value === "RECURSIVE" ? 2 : 1;
+  let index = tokens[1]?.kind === "word" && tokens[1].value === "RECURSIVE" ? 2 : 1;
 
   while (index < tokens.length) {
     const nameToken = tokens[index];
@@ -284,7 +287,7 @@ export function validateReadOnlyQuery(sql: string): string {
     throw new Error("Non-deterministic SQL functions cannot be compared safely.");
   }
   if (
-    (first === "WITH" && tokens[1]?.value === "RECURSIVE")
+    (first === "WITH" && tokens[1]?.kind === "word" && tokens[1].value === "RECURSIVE")
     || hasRecursiveCte(tokens)
     || hasCartesianJoin(tokens)
   ) {

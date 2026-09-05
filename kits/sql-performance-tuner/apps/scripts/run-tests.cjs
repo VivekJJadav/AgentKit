@@ -495,6 +495,10 @@ async function main() {
     /Recursive CTEs/,
     "Quoted recursive CTE names must also be rejected.",
   );
+  assert.doesNotThrow(
+    () => validateReadOnlyQuery('WITH "recursive" AS (SELECT 1) SELECT * FROM "recursive"'),
+    "A quoted CTE named recursive must not be treated as the RECURSIVE keyword.",
+  );
   for (const currentTimeQuery of [
     "SELECT datetime()",
     "SELECT date('now')",
@@ -509,6 +513,16 @@ async function main() {
     );
   }
   assert.doesNotThrow(() => validateReadOnlyQuery("SELECT date('2026-01-01')"));
+  for (const quotedNondeterministicQuery of [
+    'SELECT "randomblob"(67108864)',
+    'SELECT "datetime"("now")',
+  ]) {
+    assert.throws(
+      () => validateReadOnlyQuery(quotedNondeterministicQuery),
+      /Non-deterministic/,
+      `${quotedNondeterministicQuery} must not bypass function safety through quoted identifiers.`,
+    );
+  }
   assert.throws(
     () => validateReadOnlyQuery("SELECT zeroblob(67108864)"),
     /Result-expanding SQL functions/,

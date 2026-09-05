@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { MAX_DATABASE_BYTES, MAX_QUERY_CHARACTERS, runModeSchema } from "../../../lib/contracts";
 import { checkLiveRateLimit, RateLimitConfigurationError } from "../../../lib/rate-limit";
+import { readBoundedJsonBody, RequestBodyTooLargeError } from "../../../lib/request-body";
 import { tuneQuery } from "../../../lib/tuner";
 
 export const runtime = "nodejs";
@@ -16,7 +17,7 @@ const requestSchema = z.object({
 
 export async function POST(request: Request) {
   try {
-    const input = requestSchema.parse(await request.json());
+    const input = requestSchema.parse(await readBoundedJsonBody(request));
     if (input.mode === "live") {
       const rateLimit = await checkLiveRateLimit(request);
       if (!rateLimit.allowed) {
@@ -48,6 +49,12 @@ export async function POST(request: Request) {
     const status = report.status === "invalid-input" ? 400 : report.status === "failed" ? 500 : 200;
     return NextResponse.json(report, { status });
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return NextResponse.json(
+        { status: "invalid-input", conclusion: error.message, experiments: [] },
+        { status: 413 },
+      );
+    }
     if (error instanceof RateLimitConfigurationError) {
       return NextResponse.json(
         { status: "failed", conclusion: error.message, experiments: [] },

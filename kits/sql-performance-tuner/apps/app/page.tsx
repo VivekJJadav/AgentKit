@@ -1,13 +1,29 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
 import {
   Activity, Check, CheckCircle2, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clipboard,
   Clock3, Database, Gauge, Play, RotateCcw, ShieldAlert, ShieldCheck, Sparkles, Square, Upload, XCircle,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
 
-import type { RunMode, StrategistExperimentEvidence, TuningReport } from "../lib/contracts";
+import {
+  MAX_QUERY_CHARACTERS,
+  type RunMode,
+  type StrategistExperimentEvidence,
+  type TuningReport,
+} from "../lib/contracts";
 import { DEMO_QUERY } from "../lib/demo-database";
+
+const queryFormSchema = z.object({
+  query: z.string().trim().min(1, "Enter a SQL query.").max(
+    MAX_QUERY_CHARACTERS,
+    `Queries are limited to ${MAX_QUERY_CHARACTERS.toLocaleString()} characters.`,
+  ),
+});
+type QueryFormValues = z.infer<typeof queryFormSchema>;
 
 function milliseconds(value?: number): string {
   if (value === undefined) return "-";
@@ -160,7 +176,11 @@ function Experiment({ experiment, winner }: { experiment: StrategistExperimentEv
 }
 
 export default function HomePage() {
-  const [query, setQuery] = useState(DEMO_QUERY);
+  const queryForm = useForm<QueryFormValues>({
+    resolver: zodResolver(queryFormSchema),
+    defaultValues: { query: DEMO_QUERY },
+  });
+  const query = queryForm.watch("query");
   const [mode, setMode] = useState<RunMode>("demo");
   const [report, setReport] = useState<TuningReport | null>(null);
   const [error, setError] = useState("");
@@ -208,7 +228,7 @@ export default function HomePage() {
     setReport(null);
   }
 
-  async function runTuner() {
+  async function runTuner(values: QueryFormValues) {
     if (retrySeconds > 0) return;
     const controller = new AbortController();
     abortController.current = controller;
@@ -219,7 +239,7 @@ export default function HomePage() {
       const response = await fetch("/api/tune", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, mode, databaseBase64: databaseFile?.base64 }),
+        body: JSON.stringify({ query: values.query, mode, databaseBase64: databaseFile?.base64 }),
         signal: controller.signal,
       });
       const payload = (await response.json()) as TuningReport;
@@ -243,7 +263,7 @@ export default function HomePage() {
   }
 
   function resetDemo() {
-    setQuery(DEMO_QUERY);
+    queryForm.reset({ query: DEMO_QUERY });
     setReport(null);
     setError("");
     setDatabaseFile(null);
@@ -260,7 +280,9 @@ export default function HomePage() {
   function handleQueryKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !running && query.trim()) {
       event.preventDefault();
-      void runTuner();
+      void queryForm.handleSubmit(runTuner, (errors) => {
+        setError(errors.query?.message ?? "Invalid query.");
+      })();
     }
   }
 
@@ -283,7 +305,12 @@ export default function HomePage() {
       </header>
 
       <section className="workspace">
-        <div className="editor-pane">
+        <form
+          className="editor-pane"
+          onSubmit={queryForm.handleSubmit(runTuner, (errors) => {
+            setError(errors.query?.message ?? "Invalid query.");
+          })}
+        >
           <div className="section-heading">
             <div><p className="eyebrow">Input</p><h1>Query workspace</h1></div>
             <button className="icon-button" type="button" title="Reset demo query" onClick={resetDemo}><RotateCcw size={17} /></button>
@@ -310,8 +337,7 @@ export default function HomePage() {
             </div>
             <textarea
               id="query"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              {...queryForm.register("query")}
               onKeyDown={handleQueryKeyDown}
               placeholder="Paste a SELECT query to optimize..."
               spellCheck={false}
@@ -332,7 +358,7 @@ export default function HomePage() {
                   <Square size={15} fill="currentColor" /> Stop request
                 </button>
               ) : null}
-              <button className="run-button" type="button" onClick={runTuner} disabled={running || retrySeconds > 0 || !query.trim()}>
+              <button className="run-button" type="submit" disabled={running || retrySeconds > 0 || !query.trim()}>
                 {running ? <span className="spinner" /> : <Play size={17} fill="currentColor" />}
                 {running ? "Running experiments" : retrySeconds > 0 ? `Retry in ${countdownLabel(retrySeconds)}` : "Run tuner"}
               </button>
@@ -347,7 +373,7 @@ export default function HomePage() {
             </div>
           ) : null}
           {completionMessage ? <div className="completion-toast" role="status" aria-live="polite">{completionMessage}</div> : null}
-        </div>
+        </form>
 
         <aside className="summary-pane">
           <div className="section-heading">

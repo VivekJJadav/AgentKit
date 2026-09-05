@@ -2,6 +2,9 @@ import { z } from "zod";
 
 export const MAX_DATABASE_BYTES = 4 * 1024 * 1024;
 export const MAX_QUERY_CHARACTERS = 12_000;
+// Base64 expands the database by roughly one third. The HTTP envelope also
+// needs room for the query and JSON escaping while remaining strictly bounded.
+export const MAX_REQUEST_BODY_BYTES = 6 * 1024 * 1024;
 export const MAX_RESULT_ROWS = 10_000;
 export const MAX_EXPERIMENTS = 5;
 export const BENCHMARK_WARMUP_RUNS = 1;
@@ -140,11 +143,11 @@ export const strategistInputSchema = z.object({
   attemptedStrategies: z.array(strategistStrategySchema.exclude(["conclude"])).max(MAX_EXPERIMENTS),
   remainingExperiments: z.number().int().min(0).max(MAX_EXPERIMENTS),
 }).superRefine((input, context) => {
-  if (input.experiments.length + input.remainingExperiments > MAX_EXPERIMENTS) {
+  if (input.experiments.length + input.remainingExperiments !== MAX_EXPERIMENTS) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["remainingExperiments"],
-      message: `Experiment history and remaining budget cannot exceed ${MAX_EXPERIMENTS}.`,
+      message: `Experiment history and remaining budget must total ${MAX_EXPERIMENTS}.`,
     });
   }
 

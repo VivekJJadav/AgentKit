@@ -11,7 +11,7 @@ const NONDETERMINISTIC_TOKENS = new Set([
 const SIMPLE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 type SqlToken = {
-  kind: "word" | "string" | "symbol";
+  kind: "word" | "identifier" | "string" | "symbol";
   value: string;
   depth: number;
 };
@@ -60,21 +60,24 @@ function tokenizeSql(sql: string): SqlToken[] {
     }
     if (character === '"' || character === "`" || character === "[") {
       const closing = character === "[" ? "]" : character;
+      let value = "";
       index += 1;
       let closed = false;
       while (index < sql.length) {
-        if (sql[index] === closing && sql[index + 1] === closing && closing !== "]") {
+        if (sql[index] === closing && sql[index + 1] === closing) {
+          value += closing;
           index += 2;
         } else if (sql[index] === closing) {
           index += 1;
           closed = true;
           break;
         } else {
+          value += sql[index];
           index += 1;
         }
       }
       if (!closed) throw new Error("The SQL query contains an unterminated quoted identifier.");
-      tokens.push({ kind: "word", value: "QUOTED_IDENTIFIER", depth });
+      tokens.push({ kind: "identifier", value: value.toUpperCase(), depth });
       continue;
     }
     if (/[A-Za-z_]/.test(character)) {
@@ -147,14 +150,102 @@ function hasCartesianJoin(tokens: SqlToken[]): boolean {
 }
 
 function hasNondeterministicCall(tokens: SqlToken[]): boolean {
+  if (tokens.some((token) => token.kind === "word" && NONDETERMINISTIC_TOKENS.has(token.value))) {
+    return true;
+  }
+
+  const currentTimeFunctions = new Set([
+    "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME",
+  ]);
   return tokens.some((token, index) => {
     if (token.kind !== "word") return false;
-    if (NONDETERMINISTIC_TOKENS.has(token.value)) return true;
-    return token.value === "DATETIME"
-      && tokens[index + 1]?.value === "("
-      && tokens[index + 2]?.kind === "string"
-      && tokens[index + 2]?.value.toLowerCase() === "now";
+    if (!currentTimeFunctions.has(token.value) || tokens[index + 1]?.value !== "(") return false;
+
+    const openingDepth = tokens[index + 1].depth;
+    const argumentsList: SqlToken[][] = [];
+    let currentArgument: SqlToken[] = [];
+    let foundClosing = false;
+    for (let cursor = index + 2; cursor < tokens.length; cursor += 1) {
+      const argumentToken = tokens[cursor];
+      if (argumentToken.value === ")" && argumentToken.depth === openingDepth) {
+        if (currentArgument.length || argumentsList.length) argumentsList.push(currentArgument);
+        foundClosing = true;
+        break;
+      }
+      if (argumentToken.value === "," && argumentToken.depth === openingDepth + 1) {
+        argumentsList.push(currentArgument);
+        currentArgument = [];
+      } else {
+        currentArgument.push(argumentToken);
+      }
+    }
+    if (!foundClosing) return false;
+
+    const timeValueIndex = token.value === "STRFTIME" ? 1 : 0;
+    if (argumentsList.length <= timeValueIndex) return true;
+    const timeValue = argumentsList[timeValueIndex];
+    return timeValue.length === 1
+      && timeValue[0].kind === "string"
+      && ["now", "subsec", "subsecond"].includes(timeValue[0].value.toLowerCase());
   });
+}
+
+function matchingClosingParenthesis(tokens: SqlToken[], openingIndex: number): number {
+  const depth = tokens[openingIndex]?.depth;
+  for (let index = openingIndex + 1; index < tokens.length; index += 1) {
+    if (tokens[index].value === ")" && tokens[index].depth === depth) return index;
+  }
+  return -1;
+}
+
+function isIdentifier(token: SqlToken | undefined): token is SqlToken {
+  return token?.kind === "word" || token?.kind === "identifier";
+}
+
+function hasRecursiveCte(tokens: SqlToken[]): boolean {
+  if (tokens[0]?.kind !== "word" || tokens[0].value !== "WITH") return false;
+  let index = tokens[1]?.value === "RECURSIVE" ? 2 : 1;
+
+  while (index < tokens.length) {
+    const nameToken = tokens[index];
+    if (!isIdentifier(nameToken) || nameToken.depth !== 0) break;
+    const cteName = nameToken.value;
+    index += 1;
+
+    if (tokens[index]?.value === "(" && tokens[index].depth === 0) {
+      const columnListEnd = matchingClosingParenthesis(tokens, index);
+      if (columnListEnd < 0) break;
+      index = columnListEnd + 1;
+    }
+
+    if (tokens[index]?.kind !== "word" || tokens[index].value !== "AS" || tokens[index].depth !== 0) {
+      break;
+    }
+    index += 1;
+    if (tokens[index]?.value === "NOT") index += 1;
+    if (tokens[index]?.value === "MATERIALIZED") index += 1;
+    if (tokens[index]?.value !== "(" || tokens[index].depth !== 0) break;
+
+    const bodyEnd = matchingClosingParenthesis(tokens, index);
+    if (bodyEnd < 0) break;
+    for (let cursor = index + 1; cursor < bodyEnd; cursor += 1) {
+      const reference = tokens[cursor];
+      const previous = tokens[cursor - 1];
+      if (
+        isIdentifier(reference)
+        && reference.value === cteName
+        && previous?.kind === "word"
+        && (previous.value === "FROM" || previous.value === "JOIN")
+      ) {
+        return true;
+      }
+    }
+
+    index = bodyEnd + 1;
+    if (tokens[index]?.value !== "," || tokens[index].depth !== 0) break;
+    index += 1;
+  }
+  return false;
 }
 
 function withoutTrailingSemicolon(sql: string): string {
@@ -180,7 +271,11 @@ export function validateReadOnlyQuery(sql: string): string {
   if (hasNondeterministicCall(tokens)) {
     throw new Error("Non-deterministic SQL functions cannot be compared safely.");
   }
-  if ((first === "WITH" && tokens[1]?.value === "RECURSIVE") || hasCartesianJoin(tokens)) {
+  if (
+    (first === "WITH" && tokens[1]?.value === "RECURSIVE")
+    || hasRecursiveCte(tokens)
+    || hasCartesianJoin(tokens)
+  ) {
     throw new Error("Recursive CTEs and Cartesian joins are not accepted by this bounded runner.");
   }
 
@@ -221,5 +316,13 @@ export function validateCreateIndex(sql: string, schema: TableSchema[]): Validat
 }
 
 export function queryHasExplicitOrder(sql: string): boolean {
-  return /\border\s+by\b/i.test(sql);
+  const tokens = tokenizeSql(sql);
+  return tokens.some((token, index) => (
+    token.kind === "word"
+    && token.depth === 0
+    && token.value === "ORDER"
+    && tokens[index + 1]?.kind === "word"
+    && tokens[index + 1]?.depth === 0
+    && tokens[index + 1]?.value === "BY"
+  ));
 }

@@ -14,8 +14,6 @@ import {
   type StrategistInput,
 } from "./contracts";
 
-let client: Lamatic | undefined;
-
 const MAX_UPSTREAM_LOG_MESSAGE_LENGTH = 500;
 
 function sanitizeUpstreamMessage(value: string): string {
@@ -75,7 +73,6 @@ function unwrapFlowResult(value: unknown): unknown {
 }
 
 function getLiveClient(): Lamatic {
-  if (client) return client;
   const endpoint = process.env.LAMATIC_API_URL?.trim();
   const projectId = process.env.LAMATIC_PROJECT_ID?.trim();
   const apiKey = process.env.LAMATIC_API_KEY?.trim();
@@ -84,8 +81,17 @@ function getLiveClient(): Lamatic {
     throw new Error("Live mode needs LAMATIC_API_URL, LAMATIC_PROJECT_ID, and LAMATIC_API_KEY.");
   }
 
-  client = new Lamatic({ endpoint, projectId, apiKey });
-  return client;
+  let parsedEndpoint: URL;
+  try {
+    parsedEndpoint = new URL(endpoint);
+  } catch {
+    throw new Error("LAMATIC_API_URL must be a valid HTTPS URL.");
+  }
+  if (parsedEndpoint.protocol !== "https:") {
+    throw new Error("LAMATIC_API_URL must use HTTPS before credentials can be sent.");
+  }
+
+  return new Lamatic({ endpoint: parsedEndpoint.toString(), projectId, apiKey });
 }
 
 function ensureLiveEnabled(): void {
@@ -103,6 +109,8 @@ async function executeLiveFlow(
   ensureLiveEnabled();
   if (!flowId?.trim()) throw new Error(`Live mode needs ${flowName}.`);
   const liveClient = getLiveClient();
+  // lamatic@0.3.2 does not accept an AbortSignal in executeFlow. Keep this
+  // SDK-authenticated transport so cancellation reaches the network request.
   const response = await fetch(liveClient.endpoint, {
     method: "POST",
     headers: liveClient.getHeaders(),
@@ -116,6 +124,7 @@ async function executeLiveFlow(
       variables: { workflowId: flowId, payload: input },
     }),
     cache: "no-store",
+    redirect: "error",
     signal,
   });
   const responseText = await response.text();

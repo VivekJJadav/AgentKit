@@ -1,9 +1,18 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const appRoot = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  agentRules: false,
+  outputFileTracingRoot: appRoot,
   serverExternalPackages: ["sql.js"],
-  turbopack: {
-    root: process.cwd(),
+  outputFileTracingIncludes: {
+    "/api/tune": [
+      "./lib/sql-worker.cjs",
+      "./node_modules/sql.js/dist/sql-wasm.js",
+      "./node_modules/sql.js/dist/sql-wasm.wasm",
+    ],
   },
 };
 

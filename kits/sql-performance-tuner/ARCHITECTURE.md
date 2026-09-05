@@ -171,7 +171,10 @@ runtime before using it.
 Use `sql.js` in the Next.js Node runtime. It provides a portable SQLite engine,
 supports `EXPLAIN QUERY PLAN`, and lets each candidate run against a database
 restored from the same exported byte snapshot. The bundled demo data is created
-locally, so demo mode requires no database service.
+locally, so demo mode requires no database service. Uploaded databases and all
+query execution run in disposable worker threads with a hard server-side
+deadline, allowing a timed-out query to be terminated instead of blocking the
+request process.
 
 ### Benchmark protocol
 
@@ -244,7 +247,10 @@ kits/sql-performance-tuner/
     lib/demo-database.ts
     lib/planner.ts
     lib/rate-limit.ts
+    lib/request-body.ts
     lib/sql-safety.ts
+    lib/sql-worker.cjs
+    lib/sql-worker.ts
     lib/sqlite-engine.ts
     lib/tuner.ts
     scripts/check-contracts.mjs
@@ -263,8 +269,7 @@ The first screen is the working tuner, not a landing page. It contains:
 - A bundled-demo selector or SQLite file input, plus a derived schema summary
   and editable SQL input.
 - Run and Stop request controls. Stopping aborts the browser request and the
-  active Lamatic network call. Synchronous SQLite work observes cancellation
-  between bounded local operations.
+  active Lamatic network call and terminates the active SQLite worker.
 - Baseline plan and timing.
 - A chronological experiment trail distinguishing Lamatic strategist decisions,
   deterministic local measurements, and plan/timing verdicts.

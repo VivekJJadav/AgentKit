@@ -1,5 +1,3 @@
-import type { Database } from "sql.js";
-
 import {
   AGENT_CONTRACT_VERSION,
   MAX_EXPERIMENTS,
@@ -14,20 +12,14 @@ import {
   type StrategistDecision,
   type StrategistExperimentEvidence,
   type StrategistInput,
+  type TableSchema,
   type TuningReport,
 } from "./contracts";
 import { createDemoDatabase } from "./demo-database";
 import { chooseNextExperiment, reviewTuningOutcome } from "./planner";
-import {
-  benchmarkQuery,
-  cloneDatabase,
-  explainQuery,
-  getSqlJs,
-  inspectResult,
-  readSchema,
-  resultsAreEquivalent,
-} from "./sqlite-engine";
-import { validateCreateIndex, validateReadOnlyQuery } from "./sql-safety";
+import { getSqlJs, resultsAreEquivalent } from "./sqlite-engine";
+import { queryHasExplicitOrder, validateCreateIndex, validateReadOnlyQuery } from "./sql-safety";
+import { runSqlWorkerTask } from "./sql-worker";
 
 function summarizeError(error: unknown): string {
   return error instanceof Error ? error.message : "The candidate could not be evaluated.";
@@ -40,19 +32,6 @@ function assertNotAborted(signal?: AbortSignal): void {
 function speedupFor(baselineMs: number, candidateMs: number): number {
   if (candidateMs <= 0) return 1;
   return Math.max(0.001, baselineMs / candidateMs);
-}
-
-function makeBaseline(database: Database, query: string): Baseline {
-  const result = inspectResult(database, query);
-  if (result.exceededRowLimit) {
-    throw new Error("The query returns more than 10,000 rows, so complete equivalence cannot be proven.");
-  }
-  return {
-    query,
-    plan: explainQuery(database, query),
-    result,
-    benchmark: benchmarkQuery(database, query),
-  };
 }
 
 type PlannerDependencies = {
@@ -68,14 +47,14 @@ type PlannerDependencies = {
   ) => Promise<ReviewerOutput>;
 };
 
-function indexKeyFromSql(sql: string, schema: ReturnType<typeof readSchema>): string {
+function indexKeyFromSql(sql: string, schema: TableSchema[]): string {
   const index = validateCreateIndex(sql, schema);
   return `index:${index.table.toLowerCase()}:${index.columns
     .map((column) => column.toLowerCase())
     .join(",")}`;
 }
 
-function candidateKey(decision: StrategistDecision, schema: ReturnType<typeof readSchema>): string | undefined {
+function candidateKey(decision: StrategistDecision, schema: TableSchema[]): string | undefined {
   if (decision.action === "conclude") return undefined;
   if (decision.action === "rewrite_query") {
     return `rewrite:${validateReadOnlyQuery(decision.sql).trim().toLowerCase()}`;
@@ -83,7 +62,7 @@ function candidateKey(decision: StrategistDecision, schema: ReturnType<typeof re
   return indexKeyFromSql(decision.indexSql, schema);
 }
 
-function experimentKey(experiment: StrategistExperimentEvidence, schema: ReturnType<typeof readSchema>): string | undefined {
+function experimentKey(experiment: StrategistExperimentEvidence, schema: TableSchema[]): string | undefined {
   if (experiment.kind === "rewrite_query") {
     return `rewrite:${validateReadOnlyQuery(experiment.candidateSql).trim().toLowerCase()}`;
   }
@@ -118,15 +97,42 @@ export async function tuneQueryWithDependencies(
     });
   }
 
-  const SQL = await getSqlJs();
-  const source = databaseBytes ? new SQL.Database(databaseBytes) : createDemoDatabase(SQL);
+  let sourceBytes: Uint8Array;
+  if (databaseBytes) {
+    sourceBytes = Uint8Array.from(databaseBytes);
+  } else {
+    const SQL = await getSqlJs();
+    const demoDatabase = createDemoDatabase(SQL);
+    try {
+      sourceBytes = demoDatabase.export();
+    } finally {
+      demoDatabase.close();
+    }
+  }
   let baseline: Baseline | undefined;
   const experiments: StrategistExperimentEvidence[] = [];
 
   try {
     assertNotAborted(signal);
-    const schema = readSchema(source);
-    baseline = makeBaseline(source, query);
+    const baselineEvaluation = await runSqlWorkerTask({
+      databaseBytes: sourceBytes,
+      query,
+      ordered: queryHasExplicitOrder(query),
+      includeSchema: true,
+    }, signal);
+    if (baselineEvaluation.result.exceededRowLimit) {
+      throw new Error("The query returns more than 10,000 rows, so complete equivalence cannot be proven.");
+    }
+    if (!baselineEvaluation.schema || !baselineEvaluation.plan || !baselineEvaluation.benchmark) {
+      throw new Error("The SQLite worker returned incomplete baseline evidence.");
+    }
+    const schema = baselineEvaluation.schema;
+    baseline = {
+      query,
+      plan: baselineEvaluation.plan,
+      result: baselineEvaluation.result,
+      benchmark: baselineEvaluation.benchmark,
+    };
 
     for (let number = 1; number <= MAX_EXPERIMENTS; number += 1) {
       assertNotAborted(signal);
@@ -163,19 +169,24 @@ export async function tuneQueryWithDependencies(
       );
       if (repeated) break;
 
-      let candidateDatabase: Database | undefined;
       try {
-        candidateDatabase = cloneDatabase(SQL, source);
         let queryToRun = query;
+        let indexSql: string | undefined;
         if (decision.action === "rewrite_query") {
           queryToRun = validateReadOnlyQuery(decision.sql);
         } else {
           const validated = validateCreateIndex(decision.indexSql, schema);
-          candidateDatabase.run(validated.sql);
+          indexSql = validated.sql;
         }
 
         assertNotAborted(signal);
-        const result = inspectResult(candidateDatabase, queryToRun);
+        const evaluation = await runSqlWorkerTask({
+          databaseBytes: sourceBytes,
+          query: queryToRun,
+          ordered: queryHasExplicitOrder(queryToRun),
+          indexSql,
+        }, signal);
+        const result = evaluation.result;
         const equivalent = resultsAreEquivalent(baseline.result, result);
         if (!equivalent) {
           experiments.push({
@@ -197,8 +208,11 @@ export async function tuneQueryWithDependencies(
           continue;
         }
 
-        const plan = explainQuery(candidateDatabase, queryToRun);
-        const benchmark = benchmarkQuery(candidateDatabase, queryToRun);
+        if (!evaluation.plan || !evaluation.benchmark) {
+          throw new Error("The SQLite worker returned incomplete candidate evidence.");
+        }
+        const plan = evaluation.plan;
+        const benchmark = evaluation.benchmark;
         assertNotAborted(signal);
         const speedup = speedupFor(baseline.benchmark.medianMs, benchmark.medianMs);
         const verdict = speedup >= MIN_RECOMMENDED_SPEEDUP
@@ -249,8 +263,6 @@ export async function tuneQueryWithDependencies(
           adaptation: decision.adaptation,
           stopConditions: decision.stopConditions,
         });
-      } finally {
-        candidateDatabase?.close();
       }
     }
 
@@ -294,8 +306,6 @@ export async function tuneQueryWithDependencies(
         ? ["Completed experiment evidence was preserved even though the tuning run could not finish."]
         : [],
     });
-  } finally {
-    source.close();
   }
 }
 

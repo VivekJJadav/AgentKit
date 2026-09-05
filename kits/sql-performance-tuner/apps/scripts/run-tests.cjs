@@ -15,11 +15,22 @@ require.extensions[".ts"] = (module, filename) => {
   module._compile(output.outputText, filename);
 };
 
-const { AGENT_CONTRACT_VERSION, strategistInputSchema } = require("../lib/contracts.ts");
-const { DEMO_QUERY } = require("../lib/demo-database.ts");
+const {
+  AGENT_CONTRACT_VERSION,
+  MAX_REQUEST_BODY_BYTES,
+  strategistInputSchema,
+} = require("../lib/contracts.ts");
+const { createDemoDatabase, DEMO_QUERY } = require("../lib/demo-database.ts");
 const { chooseNextExperiment, normalizeReviewerOutput } = require("../lib/planner.ts");
-const { checkLocalRateLimit } = require("../lib/rate-limit.ts");
-const { validateReadOnlyQuery } = require("../lib/sql-safety.ts");
+const {
+  checkLocalRateLimit,
+  checkRedisRateLimit,
+  RateLimitConfigurationError,
+} = require("../lib/rate-limit.ts");
+const { readBoundedJsonBody, RequestBodyTooLargeError } = require("../lib/request-body.ts");
+const { queryHasExplicitOrder, validateReadOnlyQuery } = require("../lib/sql-safety.ts");
+const { getSqlJs } = require("../lib/sqlite-engine.ts");
+const { runSqlWorkerTask } = require("../lib/sql-worker.ts");
 const { selectWinningExperiment, tuneQuery, tuneQueryWithDependencies } = require("../lib/tuner.ts");
 
 const benchmark = {
@@ -112,6 +123,43 @@ async function main() {
     attemptedStrategies: [],
     remainingExperiments: 5,
   });
+  assert.equal(strategistInputSchema.safeParse({
+    ...firstInput,
+    remainingExperiments: 4,
+  }).success, false, "Under-counted experiment budgets must be rejected.");
+
+  assert.deepEqual(
+    await readBoundedJsonBody(new Request("http://localhost/api/tune", {
+      method: "POST",
+      body: JSON.stringify({ query: "SELECT 1" }),
+    })),
+    { query: "SELECT 1" },
+  );
+  const oversizedStream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3, 4]));
+      controller.enqueue(new Uint8Array([5, 6, 7, 8]));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    readBoundedJsonBody(new Request("http://localhost/api/tune", {
+      method: "POST",
+      body: oversizedStream,
+      duplex: "half",
+    }), 6),
+    RequestBodyTooLargeError,
+    "Chunked request bodies must be capped even without Content-Length.",
+  );
+  await assert.rejects(
+    readBoundedJsonBody(new Request("http://localhost/api/tune", {
+      method: "POST",
+      headers: { "content-length": String(MAX_REQUEST_BODY_BYTES + 1) },
+      body: "{}",
+    })),
+    RequestBodyTooLargeError,
+    "Oversized declared bodies must be rejected before parsing.",
+  );
   const firstProposal = await chooseNextExperiment("demo", firstInput);
   assert.equal(firstProposal.action, "create_index", "No previous experiments should produce a safe first proposal.");
   assert.equal(firstProposal.strategy, "filter_first_index");
@@ -136,18 +184,36 @@ async function main() {
     process.env.LAMATIC_PROJECT_ID = "test-project";
     process.env.LAMATIC_API_KEY = "test-api-key";
     process.env.SQL_TUNER_STRATEGIST_FLOW_ID = "test-flow";
-    global.fetch = async () => new Response(JSON.stringify({
-      errors: [{ message: "apiKey=super-secret; SELECT customer_id FROM orders" }],
-    }), {
-      status: 500,
-      statusText: "Internal Server Error",
-      headers: { "x-request-id": "safe-request-id" },
-    });
+    let liveFetchOptions;
+    global.fetch = async (_url, options) => {
+      liveFetchOptions = options;
+      return new Response(JSON.stringify({
+        errors: [{ message: "apiKey=super-secret; SELECT customer_id FROM orders" }],
+      }), {
+        status: 500,
+        statusText: "Internal Server Error",
+        headers: { "x-request-id": "safe-request-id" },
+      });
+    };
     console.error = (...args) => errorLogs.push(args);
     await assert.rejects(
       chooseNextExperiment("live", firstInput),
       /request failed with HTTP 500/,
     );
+    assert.equal(liveFetchOptions.redirect, "error", "Credential-bearing Lamatic calls must reject redirects.");
+
+    process.env.LAMATIC_API_URL = "http://lamatic.invalid/graphql";
+    let insecureFetchCalled = false;
+    global.fetch = async () => {
+      insecureFetchCalled = true;
+      throw new Error("Fetch must not be called for an insecure endpoint.");
+    };
+    await assert.rejects(
+      chooseNextExperiment("live", firstInput),
+      /must use HTTPS/,
+      "Lamatic credentials must never be sent over HTTP.",
+    );
+    assert.equal(insecureFetchCalled, false);
   } finally {
     global.fetch = originalFetch;
     console.error = originalConsoleError;
@@ -389,6 +455,33 @@ async function main() {
     () => validateReadOnlyQuery("WITH RECURSIVE counter(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM counter) SELECT x FROM counter"),
     /Recursive CTEs/,
   );
+  assert.throws(
+    () => validateReadOnlyQuery("WITH counter(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM counter) SELECT x FROM counter"),
+    /Recursive CTEs/,
+    "SQLite recursive CTEs must be rejected even without the optional RECURSIVE keyword.",
+  );
+  assert.throws(
+    () => validateReadOnlyQuery('WITH "counter"(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM "counter") SELECT x FROM "counter"'),
+    /Recursive CTEs/,
+    "Quoted recursive CTE names must also be rejected.",
+  );
+  for (const currentTimeQuery of [
+    "SELECT datetime()",
+    "SELECT date('now')",
+    "SELECT unixepoch('subsec')",
+    "SELECT strftime('%s')",
+    "SELECT strftime('%s', 'now')",
+  ]) {
+    assert.throws(
+      () => validateReadOnlyQuery(currentTimeQuery),
+      /Non-deterministic/,
+      `${currentTimeQuery} must be rejected as a current-time expression.`,
+    );
+  }
+  assert.doesNotThrow(() => validateReadOnlyQuery("SELECT date('2026-01-01')"));
+  assert.equal(queryHasExplicitOrder("SELECT 'order by', id FROM orders"), false);
+  assert.equal(queryHasExplicitOrder("SELECT * FROM (SELECT id FROM orders ORDER BY id)"), false);
+  assert.equal(queryHasExplicitOrder("SELECT id FROM orders ORDER BY id"), true);
   assert.throws(() => validateReadOnlyQuery("SELECT * FROM orders CROSS JOIN orders AS other"), /Cartesian joins/);
   assert.throws(() => validateReadOnlyQuery("SELECT * FROM orders, orders AS other"), /Cartesian joins/);
   assert.throws(
@@ -428,6 +521,64 @@ async function main() {
     checkLocalRateLimit(localLimitKey, 61_001).allowed,
     true,
     "Expired local rate-limit entries must be removed and reset.",
+  );
+
+  const originalRedisEnvironment = {
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  };
+  try {
+    process.env.UPSTASH_REDIS_REST_URL = "http://redis.invalid";
+    process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+    let redisFetchCalled = false;
+    global.fetch = async () => {
+      redisFetchCalled = true;
+      throw new Error("Fetch must not be called for an insecure Redis endpoint.");
+    };
+    await assert.rejects(
+      checkRedisRateLimit("test-client"),
+      RateLimitConfigurationError,
+      "Redis tokens must never be sent over HTTP.",
+    );
+    assert.equal(redisFetchCalled, false);
+
+    process.env.UPSTASH_REDIS_REST_URL = "https://redis.invalid";
+    global.fetch = async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    });
+    await assert.rejects(
+      checkRedisRateLimit("test-client", undefined, 5),
+      /timed out/,
+      "Redis calls need an independent deadline.",
+    );
+
+    let redisFetchOptions;
+    global.fetch = async (_url, options) => {
+      redisFetchOptions = options;
+      return new Response(JSON.stringify({ result: [1, 60_000] }), { status: 200 });
+    };
+    assert.equal((await checkRedisRateLimit("test-client")).allowed, true);
+    assert.equal(redisFetchOptions.redirect, "error", "Credential-bearing Redis calls must reject redirects.");
+  } finally {
+    global.fetch = originalFetch;
+    if (originalRedisEnvironment.url === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+    else process.env.UPSTASH_REDIS_REST_URL = originalRedisEnvironment.url;
+    if (originalRedisEnvironment.token === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    else process.env.UPSTASH_REDIS_REST_TOKEN = originalRedisEnvironment.token;
+  }
+
+  const SQL = await getSqlJs();
+  const workerFixture = createDemoDatabase(SQL);
+  const workerFixtureBytes = workerFixture.export();
+  workerFixture.close();
+  await assert.rejects(
+    runSqlWorkerTask({
+      databaseBytes: workerFixtureBytes,
+      query: DEMO_QUERY,
+      ordered: false,
+    }, undefined, 1),
+    /safety deadline/,
+    "SQLite work must be terminable by a server-side deadline.",
   );
 
   let receivedSignal;

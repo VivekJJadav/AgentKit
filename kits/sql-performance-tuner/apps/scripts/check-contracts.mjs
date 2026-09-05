@@ -82,6 +82,12 @@ const invalidBudget = strategistInputSchema.safeParse({
 });
 assert.equal(invalidBudget.success, false, "Inconsistent experiment budgets must be rejected.");
 
+const undercountedBudget = strategistInputSchema.safeParse({
+  ...validStrategistInput,
+  remainingExperiments: 3,
+});
+assert.equal(undercountedBudget.success, false, "Under-counted experiment budgets must be rejected.");
+
 const invalidHistory = strategistInputSchema.safeParse({
   ...validStrategistInput,
   attemptedStrategies: ["query_rewrite"],

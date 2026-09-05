@@ -5,8 +5,9 @@ const FORBIDDEN_QUERY_TOKENS = new Set([
   "ATTACH", "DETACH", "PRAGMA", "VACUUM", "INSERT", "UPDATE", "DELETE", "REPLACE",
   "DROP", "ALTER", "CREATE", "REINDEX", "ANALYZE", "LOAD_EXTENSION",
 ]);
-const NONDETERMINISTIC_TOKENS = new Set([
-  "RANDOM", "RANDOMBLOB", "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME",
+const NONDETERMINISTIC_FUNCTIONS = new Set(["RANDOM", "RANDOMBLOB"]);
+const NONDETERMINISTIC_LITERALS = new Set([
+  "CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME",
 ]);
 const UNBOUNDED_RESULT_FUNCTIONS = new Set([
   "CONCAT", "CONCAT_WS", "FORMAT", "GROUP_CONCAT", "HEX", "JSON_ARRAY",
@@ -154,10 +155,25 @@ function hasCartesianJoin(tokens: SqlToken[]): boolean {
   return false;
 }
 
+function isFunctionCall(tokens: SqlToken[], index: number): boolean {
+  const name = tokens[index];
+  const openingParenthesis = tokens[index + 1];
+  return (
+    (name?.kind === "word" || name?.kind === "identifier")
+    && openingParenthesis?.kind === "symbol"
+    && openingParenthesis.value === "("
+    && openingParenthesis.depth === name.depth
+  );
+}
+
 function hasNondeterministicCall(tokens: SqlToken[]): boolean {
   if (tokens.some((token) => (
-    (token.kind === "word" || token.kind === "identifier")
-    && NONDETERMINISTIC_TOKENS.has(token.value)
+    token.kind === "word" && NONDETERMINISTIC_LITERALS.has(token.value)
+  ))) {
+    return true;
+  }
+  if (tokens.some((token, index) => (
+    NONDETERMINISTIC_FUNCTIONS.has(token.value) && isFunctionCall(tokens, index)
   ))) {
     return true;
   }
@@ -166,8 +182,7 @@ function hasNondeterministicCall(tokens: SqlToken[]): boolean {
     "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME",
   ]);
   return tokens.some((token, index) => {
-    if (token.kind !== "word" && token.kind !== "identifier") return false;
-    if (!currentTimeFunctions.has(token.value) || tokens[index + 1]?.value !== "(") return false;
+    if (!currentTimeFunctions.has(token.value) || !isFunctionCall(tokens, index)) return false;
 
     const openingDepth = tokens[index + 1].depth;
     const argumentsList: SqlToken[][] = [];
@@ -277,9 +292,7 @@ export function validateReadOnlyQuery(sql: string): string {
     throw new Error("The query contains a blocked database operation.");
   }
   if (tokens.some((token, index) => (
-    (token.kind === "word" || token.kind === "identifier")
-    && UNBOUNDED_RESULT_FUNCTIONS.has(token.value)
-    && tokens[index + 1]?.value === "("
+    UNBOUNDED_RESULT_FUNCTIONS.has(token.value) && isFunctionCall(tokens, index)
   ))) {
     throw new Error("Result-expanding SQL functions are not accepted by this bounded runner.");
   }

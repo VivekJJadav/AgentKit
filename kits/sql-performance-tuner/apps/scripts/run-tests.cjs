@@ -513,9 +513,43 @@ async function main() {
     );
   }
   assert.doesNotThrow(() => validateReadOnlyQuery("SELECT date('2026-01-01')"));
+  for (const deterministicQuotedIdentifierQuery of [
+    'SELECT 1 AS "CURRENT_TIMESTAMP"',
+    'SELECT 1 AS "CURRENT_DATE"',
+    'SELECT 1 AS "CURRENT_TIME"',
+    'SELECT 1 AS "RANDOM"',
+    'SELECT 1 AS "RANDOMBLOB"',
+    'SELECT 1 AS "ZEROBLOB"',
+    "SELECT 1 AS `CURRENT_TIMESTAMP`",
+    "SELECT 1 AS [CURRENT_TIMESTAMP]",
+  ]) {
+    assert.doesNotThrow(
+      () => validateReadOnlyQuery(deterministicQuotedIdentifierQuery),
+      `${deterministicQuotedIdentifierQuery} must treat the quoted name as an identifier, not an unsafe expression.`,
+    );
+  }
+  for (const nondeterministicLiteralQuery of [
+    "SELECT CURRENT_TIMESTAMP",
+    "SELECT CURRENT_DATE",
+    "SELECT CURRENT_TIME",
+  ]) {
+    assert.throws(
+      () => validateReadOnlyQuery(nondeterministicLiteralQuery),
+      /Non-deterministic/,
+      `${nondeterministicLiteralQuery} must reject SQLite's bare current-time literal.`,
+    );
+  }
   for (const quotedNondeterministicQuery of [
+    'SELECT "random"()',
     'SELECT "randomblob"(67108864)',
+    "SELECT `randomblob`(67108864)",
+    "SELECT [randomblob](67108864)",
+    'SELECT "date"("now")',
+    'SELECT "time"("now")',
     'SELECT "datetime"("now")',
+    'SELECT "julianday"("now")',
+    'SELECT "unixepoch"("subsec")',
+    'SELECT "strftime"("%s", "now")',
   ]) {
     assert.throws(
       () => validateReadOnlyQuery(quotedNondeterministicQuery),
@@ -528,6 +562,13 @@ async function main() {
     /Result-expanding SQL functions/,
     "Unbounded single-cell result constructors must be rejected before execution.",
   );
+  assert.throws(
+    () => validateReadOnlyQuery('SELECT "ZEROBLOB"(67108864)'),
+    /Result-expanding SQL functions/,
+    "Quoted result-expanding function names must be rejected before execution.",
+  );
+  assert.throws(() => validateReadOnlyQuery("SELECT `ZEROBLOB`(67108864)"), /Result-expanding SQL functions/);
+  assert.throws(() => validateReadOnlyQuery("SELECT [ZEROBLOB](67108864)"), /Result-expanding SQL functions/);
   assert.equal(queryHasExplicitOrder("SELECT 'order by', id FROM orders"), false);
   assert.equal(queryHasExplicitOrder("SELECT * FROM (SELECT id FROM orders ORDER BY id)"), false);
   assert.equal(queryHasExplicitOrder("SELECT id FROM orders ORDER BY id"), true);

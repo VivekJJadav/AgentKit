@@ -505,6 +505,7 @@ async function main() {
     "SELECT unixepoch('subsec')",
     "SELECT strftime('%s')",
     "SELECT strftime('%s', 'now')",
+    "SELECT datetime('n' || 'ow')",
   ]) {
     assert.throws(
       () => validateReadOnlyQuery(currentTimeQuery),

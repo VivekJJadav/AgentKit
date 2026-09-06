@@ -207,8 +207,8 @@ function hasNondeterministicCall(tokens: SqlToken[]): boolean {
     const timeValueIndex = token.value === "STRFTIME" ? 1 : 0;
     if (argumentsList.length <= timeValueIndex) return true;
     const timeValue = argumentsList[timeValueIndex];
-    return timeValue.length === 1
-      && (timeValue[0].kind === "string" || timeValue[0].kind === "identifier")
+    if (timeValue.length !== 1) return true;
+    return (timeValue[0].kind === "string" || timeValue[0].kind === "identifier")
       && ["now", "subsec", "subsecond"].includes(timeValue[0].value.toLowerCase());
   });
 }

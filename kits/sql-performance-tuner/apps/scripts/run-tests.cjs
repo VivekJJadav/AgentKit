@@ -21,7 +21,7 @@ const {
   MAX_RESULT_BYTES,
   strategistInputSchema,
 } = require("../lib/contracts.ts");
-const { createDemoDatabase, DEMO_QUERY } = require("../lib/demo-database.ts");
+const { createDemoDatabase, DEMO_QUERY, DEMO_REWRITE_QUERY } = require("../lib/demo-database.ts");
 const { chooseNextExperiment, normalizeReviewerOutput } = require("../lib/planner.ts");
 const {
   checkLocalRateLimit,
@@ -741,6 +741,20 @@ async function main() {
   const demoReport = await tuneQuery(DEMO_QUERY, "demo");
   assert.ok(demoReport.review, "Demo tuning should return reviewer output.");
   assert.ok(demoReport.review.recommendation.length > 0);
+
+  const rewriteReport = await tuneQuery(DEMO_REWRITE_QUERY, "demo");
+  assert.equal(rewriteReport.status, "improved", "The video rewrite example should complete within the sandbox deadline.");
+  assert.equal(rewriteReport.baseline.result.rowCount, 200);
+  assert.equal(rewriteReport.experiments[0]?.kind, "rewrite_query");
+  assert.equal(rewriteReport.experiments[0]?.equivalence, true);
+  assert.match(rewriteReport.winner?.candidateSql ?? "", /LEFT JOIN/);
+
+  const similarButDifferent = DEMO_REWRITE_QUERY.replace("'enterprise'", "'enterprise' AND c.id > 20");
+  const guardedPlanner = await chooseNextExperiment("demo", {
+    ...firstInput,
+    originalQuery: similarButDifferent,
+  });
+  assert.notEqual(guardedPlanner.action, "rewrite_query", "The demo planner must not claim a rewrite for an unmatched query shape.");
 
   let invoked = false;
   const invalidReport = await tuneQueryWithDependencies("DROP TABLE orders", "live", {

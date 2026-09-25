@@ -260,6 +260,22 @@ async function callStrategist(input: StrategistInput, signal?: AbortSignal): Pro
   return normalizeStrategistDecision(raw);
 }
 
+function demoCorrelatedRevenueRewrite(query: string): string | undefined {
+  // This narrow template is the only rewrite the deterministic demo planner
+  // knows how to propose. The evaluator still checks the full result and speed.
+  const match = query.match(/^\s*SELECT\s+c\.id\s+AS\s+customer_id\s*,\s*c\.name\s*,\s*\(\s*SELECT\s+SUM\s*\(\s*o\.total\s*\)\s+FROM\s+orders\s+(?:AS\s+)?o\s+WHERE\s+o\.customer_id\s*=\s*c\.id(?:\s+AND\s+o\.created_at\s*>=\s*('[0-9]{4}-[0-9]{2}-[0-9]{2}'))?\s*\)\s+AS\s+revenue\s+FROM\s+customers\s+(?:AS\s+)?c(?:\s+WHERE\s+c\.segment\s*=\s*('(startup|growth|enterprise)'))?\s*;?\s*$/i);
+  if (!match) return undefined;
+  const dateFilter = match[1] ? `\n  WHERE created_at >= ${match[1]}` : "";
+  const segmentFilter = match[2] ? `\nWHERE c.segment = ${match[2]}` : "";
+  return `SELECT c.id AS customer_id, c.name, totals.revenue
+FROM customers AS c
+LEFT JOIN (
+  SELECT customer_id, SUM(total) AS revenue
+  FROM orders${dateFilter}
+  GROUP BY customer_id
+) AS totals ON totals.customer_id = c.id${segmentFilter}`;
+}
+
 function demoDecision(input: StrategistInput): StrategistDecision {
   if (input.experiments.length > 0 || input.remainingExperiments === 0) {
     const improved = input.experiments.find((experiment) => experiment.verdict === "improved");
@@ -272,6 +288,23 @@ function demoDecision(input: StrategistInput): StrategistDecision {
         ? `The measured experiment produced a proven ${improved.speedup?.toFixed(2)}x speedup.`
         : "The bounded demo planner has no additional distinct high-confidence experiment.",
       evidenceUsed: input.experiments.map((experiment) => experiment.number),
+    };
+  }
+
+  const rewrite = demoCorrelatedRevenueRewrite(input.originalQuery);
+  if (rewrite) {
+    return {
+      contractVersion: AGENT_CONTRACT_VERSION,
+      action: "rewrite_query",
+      strategy: "query_rewrite",
+      hypothesis: "Group order revenue once, then join the totals to customers instead of scanning orders for each customer.",
+      expectedPlanChange: "Replace the correlated scalar subquery with one grouped orders pass and a LEFT JOIN.",
+      sql: rewrite,
+      adaptation: {
+        learnedFromEvidence: "The baseline contains a correlated revenue subquery for every customer.",
+        differsFromPrevious: "This is the first proposed experiment and changes the SELECT query itself.",
+      },
+      stopConditions: ["Keep the original if results differ or the rewrite is not at least 1.10x faster."],
     };
   }
 

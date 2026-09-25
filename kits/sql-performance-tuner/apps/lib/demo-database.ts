@@ -3,6 +3,13 @@ import type { Database, SqlJsStatic } from "sql.js";
 export const DEMO_QUERY =
   "SELECT customer_id, SUM(total) AS revenue FROM orders WHERE created_at >= '2026-01-01' GROUP BY customer_id";
 
+export const DEMO_REWRITE_QUERY = `SELECT c.id AS customer_id, c.name,
+  (SELECT SUM(o.total)
+   FROM orders AS o
+   WHERE o.customer_id = c.id) AS revenue
+FROM customers AS c
+WHERE c.segment = 'enterprise'`;
+
 export function createDemoDatabase(SQL: SqlJsStatic): Database {
   const database = new SQL.Database();
   database.run(`

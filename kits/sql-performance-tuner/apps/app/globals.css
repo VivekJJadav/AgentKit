@@ -90,6 +90,10 @@ h3 { font-size: 14px; font-weight: 650; line-height: 1.45; margin: 0; }
 .mode-control button:disabled { cursor: not-allowed; opacity: .65; }
 
 .query-label { color: var(--label); display: block; font-size: 12px; font-weight: 650; margin-bottom: 8px; }
+.query-heading { align-items: baseline; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.example-button { background: transparent; border: 0; color: var(--green); font-size: 12px; font-weight: 650; padding: 0 0 8px; }
+.example-button:hover { text-decoration: underline; }
+.example-button:disabled { cursor: not-allowed; opacity: .6; }
 .editor-wrap { background: var(--ink); border: 1px solid var(--editor-line); border-radius: 7px; display: grid; grid-template-columns: 42px minmax(0, 1fr); min-height: 190px; overflow: hidden; }
 .line-number { border-right: 1px solid var(--editor-gutter-line); color: var(--editor-gutter); display: flex; flex-direction: column; font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 18px 14px; text-align: right; }
 .line-number span { height: 21.45px; }

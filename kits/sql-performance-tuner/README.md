@@ -45,6 +45,11 @@ npm run dev
 Open `http://localhost:3000` and run the preloaded query in Demo planner mode.
 The demo creates a deterministic in-memory commerce database and needs no
 credentials.
+Use **Load rewrite example** in Demo planner to compare a correlated customer
+revenue query with a grouped `LEFT JOIN` rewrite. The demo planner recognizes
+this narrow query shape; it checks complete results and measured speed before
+recommending the rewrite. Other queries may receive an index or no proven
+improvement. Demo planner does not call Lamatic flows.
 
 Useful commands:
 

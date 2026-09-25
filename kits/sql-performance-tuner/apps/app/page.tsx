@@ -15,7 +15,7 @@ import {
   type StrategistExperimentEvidence,
   type TuningReport,
 } from "../lib/contracts";
-import { DEMO_QUERY } from "../lib/demo-database";
+import { DEMO_QUERY, DEMO_REWRITE_QUERY } from "../lib/demo-database";
 
 const queryFormSchema = z.object({
   query: z.string().trim().min(1, "Enter a SQL query.").max(
@@ -114,7 +114,7 @@ function SpeedComparison({ report }: { report: TuningReport }) {
   );
 }
 
-function Experiment({ experiment, winner }: { experiment: StrategistExperimentEvidence; winner: boolean }) {
+function Experiment({ experiment, winner, mode }: { experiment: StrategistExperimentEvidence; winner: boolean; mode: RunMode }) {
   const [expanded, setExpanded] = useState(winner);
   const planDetails = experiment.plan?.map((step) => step.detail).filter(Boolean) ?? [];
   return (
@@ -122,7 +122,7 @@ function Experiment({ experiment, winner }: { experiment: StrategistExperimentEv
       <div className="experiment-head">
         <div className="experiment-index">{experiment.number}</div>
         <div>
-          <p className="eyebrow">Lamatic strategist · {strategyLabel(experiment.strategy)}</p>
+          <p className="eyebrow">{mode === "live" ? "Lamatic strategist" : "Demo planner"} · {strategyLabel(experiment.strategy)}</p>
           <h3>{experiment.hypothesis}</h3>
         </div>
         <div className="experiment-actions">
@@ -330,7 +330,14 @@ export default function HomePage() {
             </div>
           </div>
 
-          <label className="query-label" htmlFor="query">Read-only SQL</label>
+          <div className="query-heading">
+            <label className="query-label" htmlFor="query">Read-only SQL</label>
+            <button className="example-button" type="button" disabled={running} onClick={() => {
+              queryForm.setValue("query", DEMO_REWRITE_QUERY, { shouldValidate: true });
+              setReport(null);
+              setError("");
+            }}>Load rewrite example</button>
+          </div>
           <div className="editor-wrap">
             <div className="line-number" aria-hidden="true">
               {Array.from({ length: queryLines }, (_, index) => <span key={index}>{index + 1}</span>)}
@@ -411,12 +418,12 @@ export default function HomePage() {
           <div className="results-inner">
             <div className="results-title"><div><p className="eyebrow">Evidence trail</p><h2>Experiments</h2></div><span>{report.experiments.length} evaluated</span></div>
             {report.experiments.length ? (
-              <div className="experiment-list">{report.experiments.map((experiment) => <Experiment key={experiment.number} experiment={experiment} winner={report.winner?.number === experiment.number} />)}</div>
+              <div className="experiment-list">{report.experiments.map((experiment) => <Experiment key={experiment.number} experiment={experiment} winner={report.winner?.number === experiment.number} mode={mode} />)}</div>
             ) : <p className="no-experiments">The planner concluded without proposing a candidate.</p>}
             {report.review ? (
               <section className="review-panel" aria-labelledby="review-heading">
                 <div className="review-copy">
-                  <p className="eyebrow">Lamatic reviewer explanation</p>
+                  <p className="eyebrow">{mode === "live" ? "Lamatic reviewer explanation" : "Demo report"}</p>
                   <h2 id="review-heading">{report.review.headline}</h2>
                   <p>{report.review.evidenceSummary}</p>
                 </div>

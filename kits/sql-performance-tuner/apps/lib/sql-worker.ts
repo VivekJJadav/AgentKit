@@ -4,6 +4,8 @@ import { Worker } from "node:worker_threads";
 import {
   BENCHMARK_MEASURED_RUNS,
   BENCHMARK_WARMUP_RUNS,
+  DEMO_BENCHMARK_MEASURED_RUNS,
+  DEMO_BENCHMARK_WARMUP_RUNS,
   MAX_DATABASE_BYTES,
   MAX_RESULT_BYTES,
   MAX_RESULT_ROWS,
@@ -23,6 +25,7 @@ export type SqlWorkerTask = {
   ordered: boolean;
   indexSql?: string;
   includeSchema?: boolean;
+  demoBenchmark?: boolean;
 };
 
 export type SqlWorkerResult = {
@@ -61,8 +64,8 @@ export function runSqlWorkerTask(
         databaseBytes: Uint8Array.from(task.databaseBytes),
         maxResultBytes: MAX_RESULT_BYTES,
         maxResultRows: MAX_RESULT_ROWS,
-        warmupRuns: BENCHMARK_WARMUP_RUNS,
-        measuredRuns: BENCHMARK_MEASURED_RUNS,
+        warmupRuns: task.demoBenchmark ? DEMO_BENCHMARK_WARMUP_RUNS : BENCHMARK_WARMUP_RUNS,
+        measuredRuns: task.demoBenchmark ? DEMO_BENCHMARK_MEASURED_RUNS : BENCHMARK_MEASURED_RUNS,
         sqlJsModulePath: join(process.cwd(), "node_modules", "sql.js", "dist", "sql-wasm.js"),
         wasmPath: join(process.cwd(), "node_modules", "sql.js", "dist", "sql-wasm.wasm"),
       },

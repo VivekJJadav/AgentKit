@@ -745,6 +745,8 @@ async function main() {
   const rewriteReport = await tuneQuery(DEMO_REWRITE_QUERY, "demo");
   assert.equal(rewriteReport.status, "improved", "The video rewrite example should complete within the sandbox deadline.");
   assert.equal(rewriteReport.baseline.result.rowCount, 200);
+  assert.equal(rewriteReport.baseline.benchmark.warmupRuns, 0);
+  assert.equal(rewriteReport.baseline.benchmark.measuredRuns.length, 3);
   assert.equal(rewriteReport.experiments[0]?.kind, "rewrite_query");
   assert.equal(rewriteReport.experiments[0]?.equivalence, true);
   assert.match(rewriteReport.winner?.candidateSql ?? "", /LEFT JOIN/);

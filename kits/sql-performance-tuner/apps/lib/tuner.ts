@@ -119,6 +119,7 @@ export async function tuneQueryWithDependencies(
       query,
       ordered: queryHasExplicitOrder(query),
       includeSchema: true,
+      demoBenchmark: mode === "demo",
     }, signal);
     if (baselineEvaluation.result.exceededRowLimit) {
       throw new Error("The query returns more than 10,000 rows, so complete equivalence cannot be proven.");
@@ -185,6 +186,7 @@ export async function tuneQueryWithDependencies(
           query: queryToRun,
           ordered: queryHasExplicitOrder(queryToRun),
           indexSql,
+          demoBenchmark: mode === "demo",
         }, signal);
         const result = evaluation.result;
         const equivalent = resultsAreEquivalent(baseline.result, result);

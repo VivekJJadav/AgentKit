@@ -10,6 +10,10 @@ export const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 export const MAX_EXPERIMENTS = 5;
 export const BENCHMARK_WARMUP_RUNS = 1;
 export const BENCHMARK_MEASURED_RUNS = 5;
+// Keep the deliberately slow rewrite example inside the SQLite worker's
+// five-second deadline, including result inspection and worker startup.
+export const DEMO_BENCHMARK_WARMUP_RUNS = 0;
+export const DEMO_BENCHMARK_MEASURED_RUNS = 3;
 export const MIN_RECOMMENDED_SPEEDUP = 1.1;
 export const AGENT_CONTRACT_VERSION = "1.0" as const;
 

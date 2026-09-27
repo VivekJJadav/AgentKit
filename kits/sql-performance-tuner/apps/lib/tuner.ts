@@ -16,7 +16,7 @@ import {
   type TuningReport,
 } from "./contracts";
 import { createDemoDatabase } from "./demo-database";
-import { chooseNextExperiment, reviewTuningOutcome } from "./planner";
+import { chooseNextExperiment, demoCorrelatedRevenueRewrite, reviewTuningOutcome } from "./planner";
 import { getSqlJs, resultsAreEquivalent } from "./sqlite-engine";
 import { queryHasExplicitOrder, validateCreateIndex, validateReadOnlyQuery } from "./sql-safety";
 import { runSqlWorkerTask } from "./sql-worker";
@@ -111,6 +111,9 @@ export async function tuneQueryWithDependencies(
   }
   let baseline: Baseline | undefined;
   const experiments: StrategistExperimentEvidence[] = [];
+  const demoRewriteTimeoutMs = mode === "demo" && !databaseBytes && demoCorrelatedRevenueRewrite(query)
+    ? 10_000
+    : undefined;
 
   try {
     assertNotAborted(signal);
@@ -120,7 +123,7 @@ export async function tuneQueryWithDependencies(
       ordered: queryHasExplicitOrder(query),
       includeSchema: true,
       demoBenchmark: mode === "demo",
-    }, signal);
+    }, signal, demoRewriteTimeoutMs);
     if (baselineEvaluation.result.exceededRowLimit) {
       throw new Error("The query returns more than 10,000 rows, so complete equivalence cannot be proven.");
     }

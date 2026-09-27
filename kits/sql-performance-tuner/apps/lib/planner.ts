@@ -260,7 +260,7 @@ async function callStrategist(input: StrategistInput, signal?: AbortSignal): Pro
   return normalizeStrategistDecision(raw);
 }
 
-function demoCorrelatedRevenueRewrite(query: string): string | undefined {
+export function demoCorrelatedRevenueRewrite(query: string): string | undefined {
   // This narrow template is the only rewrite the deterministic demo planner
   // knows how to propose. The evaluator still checks the full result and speed.
   const match = query.match(/^\s*SELECT\s+c\.id\s+AS\s+customer_id\s*,\s*c\.name\s*,\s*\(\s*SELECT\s+SUM\s*\(\s*o\.total\s*\)\s+FROM\s+orders\s+(?:AS\s+)?o\s+WHERE\s+o\.customer_id\s*=\s*c\.id(?:\s+AND\s+o\.created_at\s*>=\s*('[0-9]{4}-[0-9]{2}-[0-9]{2}'))?\s*\)\s+AS\s+revenue\s+FROM\s+customers\s+(?:AS\s+)?c(?:\s+WHERE\s+c\.segment\s*=\s*('(startup|growth|enterprise)'))?\s*;?\s*$/i);

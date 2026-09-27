@@ -751,6 +751,23 @@ async function main() {
   assert.equal(rewriteReport.experiments[0]?.equivalence, true);
   assert.match(rewriteReport.winner?.candidateSql ?? "", /LEFT JOIN/);
 
+  const allCustomersRewriteQuery = `SELECT
+    c.id AS customer_id,
+    c.name,
+    (
+        SELECT SUM(o.total)
+        FROM orders AS o
+        WHERE o.customer_id = c.id
+          AND o.created_at >= '2026-01-01'
+    ) AS revenue
+FROM customers AS c`;
+  const allCustomersRewriteReport = await tuneQuery(allCustomersRewriteQuery, "demo");
+  assert.equal(allCustomersRewriteReport.status, "improved", "The all-customer rewrite must finish within the demo deadline.");
+  assert.equal(allCustomersRewriteReport.baseline.result.rowCount, 600);
+  assert.equal(allCustomersRewriteReport.baseline.benchmark.measuredRuns.length, 3);
+  assert.equal(allCustomersRewriteReport.experiments[0]?.equivalence, true);
+  assert.match(allCustomersRewriteReport.winner?.candidateSql ?? "", /LEFT JOIN/);
+
   const similarButDifferent = DEMO_REWRITE_QUERY.replace("'enterprise'", "'enterprise' AND c.id > 20");
   const guardedPlanner = await chooseNextExperiment("demo", {
     ...firstInput,

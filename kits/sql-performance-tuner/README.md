@@ -143,7 +143,10 @@ the `1.10x` threshold.
 - Executes candidates only in fresh in-memory database copies.
 - Allows only simple indexes on known tables and columns.
 - Compares complete results up to 10,000 rows before benchmarking.
-- Runs one warmup and five measured executions, using the median.
+- Uses a median of five measured executions after one warmup in live mode.
+  Demo mode uses three measured executions, counting result inspection as the
+  first sample. The bundled correlated-revenue rewrite example has a 10-second
+  baseline deadline; other queries retain the 5-second worker deadline.
 - Requires at least a 10% speedup before recommending a change.
 
 ## Limitations

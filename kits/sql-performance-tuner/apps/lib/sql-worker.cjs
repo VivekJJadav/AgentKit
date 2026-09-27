@@ -63,25 +63,33 @@ function firstResult(database, sql, maxRows) {
 }
 
 function inspectResult(database, sql) {
+  const startedAt = performance.now();
   const result = boundedRows(database, sql, true);
+  const measuredMs = Number((performance.now() - startedAt).toFixed(3));
   if (result.exceededRowLimit) {
     return {
-      columns: result.columns,
-      rowCount: result.rowCount,
-      ordered: workerData.ordered,
-      hash: "row-limit-exceeded",
-      exceededRowLimit: true,
+      measuredMs,
+      result: {
+        columns: result.columns,
+        rowCount: result.rowCount,
+        ordered: workerData.ordered,
+        hash: "row-limit-exceeded",
+        exceededRowLimit: true,
+      },
     };
   }
 
   const rows = result.rows;
   if (!workerData.ordered) rows.sort();
   return {
-    columns: result.columns,
-    rowCount: result.rowCount,
-    ordered: workerData.ordered,
-    hash: createHash("sha256").update(JSON.stringify([result.columns, rows])).digest("hex"),
-    exceededRowLimit: false,
+    measuredMs,
+    result: {
+      columns: result.columns,
+      rowCount: result.rowCount,
+      ordered: workerData.ordered,
+      hash: createHash("sha256").update(JSON.stringify([result.columns, rows])).digest("hex"),
+      exceededRowLimit: false,
+    },
   };
 }
 
@@ -94,10 +102,10 @@ function explainQuery(database, sql) {
   }));
 }
 
-function benchmarkQuery(database, sql) {
+function benchmarkQuery(database, sql, inspectedMs) {
   for (let run = 0; run < workerData.warmupRuns; run += 1) boundedRows(database, sql, false);
-  const measuredRuns = [];
-  for (let run = 0; run < workerData.measuredRuns; run += 1) {
+  const measuredRuns = workerData.warmupRuns === 0 ? [inspectedMs] : [];
+  for (let run = measuredRuns.length; run < workerData.measuredRuns; run += 1) {
     const startedAt = performance.now();
     boundedRows(database, sql, false);
     measuredRuns.push(Number((performance.now() - startedAt).toFixed(3)));
@@ -144,12 +152,13 @@ async function main() {
   const database = new SQL.Database(new Uint8Array(workerData.databaseBytes));
   try {
     if (workerData.indexSql) database.run(workerData.indexSql);
-    const result = inspectResult(database, workerData.query);
+    const inspected = inspectResult(database, workerData.query);
+    const result = inspected.result;
     const response = { result };
     if (workerData.includeSchema) response.schema = readSchema(database);
     if (!result.exceededRowLimit) {
       response.plan = explainQuery(database, workerData.query);
-      response.benchmark = benchmarkQuery(database, workerData.query);
+      response.benchmark = benchmarkQuery(database, workerData.query, inspected.measuredMs);
     }
     parentPort.postMessage({ ok: true, value: response });
   } finally {

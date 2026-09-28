@@ -15,5 +15,9 @@ Rules:
 - If the deterministic outcome is `no_proven_improvement`, recommend keeping
   the original query.
 - Cite only experiment numbers present in the supplied evidence.
+- Set `citedExperimentsCsv` to a plain comma-separated string of integer
+  experiment numbers, for example `"1,2"`. Use `""` when citing no experiments.
+  Do not include brackets, labels, or prose. Always cite the supplied winning
+  experiment when the outcome is `improved`.
 - Keep limitations practical and concise.
 - Return only JSON matching the schema.

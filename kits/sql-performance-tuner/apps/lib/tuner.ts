@@ -16,7 +16,7 @@ import {
   type TuningReport,
 } from "./contracts";
 import { createDemoDatabase } from "./demo-database";
-import { chooseNextExperiment, demoCorrelatedRevenueRewrite, reviewTuningOutcome } from "./planner";
+import { chooseNextExperiment, createMeasuredReview, demoCorrelatedRevenueRewrite, reviewTuningOutcome } from "./planner";
 import { getSqlJs, resultsAreEquivalent } from "./sqlite-engine";
 import { queryHasExplicitOrder, validateCreateIndex, validateReadOnlyQuery } from "./sql-safety";
 import { runSqlWorkerTask } from "./sql-worker";
@@ -282,7 +282,17 @@ export async function tuneQueryWithDependencies(
       winningExperimentNumber: winner?.number,
     });
     assertNotAborted(signal);
-    const review = await dependencies.reviewTuningOutcome(mode, reviewerInput, signal);
+    let review: ReviewerOutput;
+    let reviewSource: "lamatic" | "demo" | "local" = mode === "live" ? "lamatic" : "demo";
+    const reviewerCaveats: string[] = [];
+    try {
+      review = await dependencies.reviewTuningOutcome(mode, reviewerInput, signal);
+    } catch (error) {
+      assertNotAborted(signal);
+      review = createMeasuredReview(reviewerInput);
+      reviewSource = "local";
+      reviewerCaveats.push(`Reviewer explanation unavailable: ${summarizeError(error)} Showing a local report of the measured evidence.`);
+    }
     assertNotAborted(signal);
 
     return tuningReportSchema.parse({
@@ -292,10 +302,12 @@ export async function tuneQueryWithDependencies(
       experiments,
       winner,
       review,
+      reviewSource,
       conclusion: winner
         ? `A ${winner.speedup?.toFixed(2)}x faster, result-equivalent candidate was proven in isolation.`
         : "No candidate cleared the 10% measured improvement threshold.",
       caveats: [
+        ...reviewerCaveats,
         "Measurements use an in-memory SQLite demo database and should be confirmed on representative production data.",
         "A recommendation is returned only after complete bounded result equivalence and repeated timing checks.",
       ],

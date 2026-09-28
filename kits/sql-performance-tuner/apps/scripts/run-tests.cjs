@@ -468,6 +468,27 @@ async function main() {
     "Malformed reviewer citations must be rejected.",
   );
 
+  for (const citations of [[1, "2"], "[1, 2]", '#1, #2', 'Experiment 1, experiment #2']) {
+    assert.deepEqual(normalizeReviewerOutput({
+      outcome: "no_proven_improvement",
+      headline: "No measured improvement was proven",
+      evidenceSummary: "No winner.",
+      recommendation: "Keep the original query.",
+      limitationsText: "Fixture.",
+      citedExperimentsCsv: citations,
+    }, reviewInput).citedExperiments, [1, 2], "Unambiguous citation formatting should normalize without inventing evidence.");
+  }
+  for (const citations of ['[1, "nope"]', "1.5", "1-2", "1,", '[{"number":1}]']) {
+    assert.throws(() => normalizeReviewerOutput({
+      outcome: "no_proven_improvement",
+      headline: "No measured improvement was proven",
+      evidenceSummary: "No winner.",
+      recommendation: "Keep the original query.",
+      limitationsText: "Fixture.",
+      citedExperimentsCsv: citations,
+    }, reviewInput), /malformed/, "Ambiguous citations must still be rejected.");
+  }
+
   assert.throws(
     () => normalizeReviewerOutput({
       outcome: "no_proven_improvement",
@@ -729,14 +750,42 @@ async function main() {
       reasoning: "One experiment is enough for this fixture.",
       evidenceUsed: input.experiments.map((item) => item.number),
     });
-  const reviewerFailure = await tuneQueryWithDependencies(DEMO_QUERY, "demo", {
+  const reviewerFailure = await tuneQueryWithDependencies(DEMO_QUERY, "live", {
     chooseNextExperiment: reviewerFailurePlanner.chooseNextExperiment,
-    reviewTuningOutcome: async () => {
-      throw new Error("Reviewer unavailable.");
-    },
+    reviewTuningOutcome: async (_mode, input) => normalizeReviewerOutput({
+      outcome: input.deterministicOutcome === "improved" ? "improved" : "no_proven_improvement",
+      headline: "Fixture reviewer",
+      evidenceSummary: "Measured fixture evidence.",
+      recommendation: "Use measured evidence.",
+      limitationsText: "Fixture.",
+      citedExperimentsCsv: "1, nope",
+    }, input),
   });
-  assert.equal(reviewerFailure.status, "failed");
+  assert.equal(reviewerFailure.status, "improved");
+  assert.equal(reviewerFailure.reviewSource, "local", "A fallback must be visibly distinct from Lamatic output.");
+  assert.equal(reviewerFailure.winner?.number, 1, "Reviewer formatting cannot erase the measured winner.");
+  assert.deepEqual(reviewerFailure.review.citedExperiments, [1]);
+  assert.match(reviewerFailure.caveats.join(" "), /malformed experiment citations/);
   assert.ok(reviewerFailure.experiments.length > 0, "Completed evidence must survive a reviewer failure.");
+
+  const reviewerAbort = new AbortController();
+  const cancelledReview = await tuneQueryWithDependencies(DEMO_QUERY, "demo", {
+    chooseNextExperiment: async () => ({
+      contractVersion: AGENT_CONTRACT_VERSION,
+      action: "conclude",
+      strategy: "conclude",
+      conclusionCode: "insufficient_evidence",
+      reasoning: "Cancellation fixture.",
+      evidenceUsed: [],
+    }),
+    reviewTuningOutcome: async () => {
+      reviewerAbort.abort();
+      throw new Error("Reviewer cancelled.");
+    },
+  }, undefined, reviewerAbort.signal);
+  assert.equal(cancelledReview.status, "failed");
+  assert.match(cancelledReview.conclusion, /cancelled/i);
+  assert.equal(cancelledReview.reviewSource, undefined, "Cancellation must not produce a fallback recommendation.");
 
   const demoReport = await tuneQuery(DEMO_QUERY, "demo");
   assert.ok(demoReport.review, "Demo tuning should return reviewer output.");

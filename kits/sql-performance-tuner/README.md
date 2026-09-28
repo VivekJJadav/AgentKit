@@ -100,6 +100,10 @@ contains only empty placeholders.
 The strategist can choose what to try. The reviewer can explain what happened.
 Neither flow can execute SQL, see raw rows, override a guard rejection, declare
 equivalence, invent speedups, or replace the locally selected winner.
+The app normalizes unambiguous reviewer citation formats and validates them
+against supplied experiment numbers. If the reviewer fails validation or is
+unavailable, the measured outcome and winning SQL remain available in a clearly
+labeled local report with a caveat; that report is not a Lamatic explanation.
 
 ## Example
 

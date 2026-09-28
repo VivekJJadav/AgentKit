@@ -265,6 +265,7 @@ export const tuningReportSchema = z.object({
   experiments: z.array(strategistExperimentEvidenceSchema),
   winner: strategistExperimentEvidenceSchema.optional(),
   review: reviewerOutputSchema.optional(),
+  reviewSource: z.enum(["lamatic", "demo", "local"]).optional(),
   conclusion: z.string().min(1),
   caveats: z.array(z.string()),
 });

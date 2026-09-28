@@ -423,7 +423,7 @@ export default function HomePage() {
             {report.review ? (
               <section className="review-panel" aria-labelledby="review-heading">
                 <div className="review-copy">
-                  <p className="eyebrow">{mode === "live" ? "Lamatic reviewer explanation" : "Demo report"}</p>
+                  <p className="eyebrow">{report.reviewSource === "local" ? "Local measured report" : mode === "live" ? "Lamatic reviewer explanation" : "Demo report"}</p>
                   <h2 id="review-heading">{report.review.headline}</h2>
                   <p>{report.review.evidenceSummary}</p>
                 </div>
@@ -434,7 +434,7 @@ export default function HomePage() {
                 </div>
                 <div className="review-meta">
                   <div>
-                    <span>Reviewer cited</span>
+                    <span>{report.reviewSource === "local" ? "Measured experiments" : "Reviewer cited"}</span>
                     <strong>{report.review.citedExperiments.length ? report.review.citedExperiments.map((number) => `#${number}`).join(", ") : "No experiment numbers"}</strong>
                   </div>
                   <div>

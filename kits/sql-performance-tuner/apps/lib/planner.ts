@@ -206,16 +206,36 @@ function parseEvidenceCsv(value: string | number): number[] {
       && all.indexOf(item) === index);
 }
 
-function parseReviewerEvidenceCsv(value: string | number): number[] {
-  const csv = String(value).trim();
-  if (!csv) return [];
-  const entries = csv.split(",").map((item) => item.trim());
-  if (entries.some((item) => !/^\d+$/.test(item))) {
-    throw new Error("Lamatic reviewer returned malformed experiment citations.");
+function parseReviewerEvidenceCsv(value: string | number | Array<string | number>): number[] {
+  let entries: unknown[];
+  if (Array.isArray(value)) {
+    entries = value;
+  } else {
+    const csv = String(value).trim();
+    if (!csv) return [];
+    if (csv.startsWith("[")) {
+      try {
+        const parsed: unknown = JSON.parse(csv);
+        if (!Array.isArray(parsed)) throw new Error();
+        entries = parsed;
+      } catch {
+        throw new Error("Lamatic reviewer returned malformed experiment citations.");
+      }
+    } else {
+      entries = csv.split(",");
+    }
   }
-  return entries
-    .map(Number)
-    .filter((item, index, all) => all.indexOf(item) === index);
+  const numbers = entries.map((entry) => {
+    if (typeof entry !== "string" && typeof entry !== "number") {
+      throw new Error("Lamatic reviewer returned malformed experiment citations.");
+    }
+    const match = String(entry).trim().match(/^(?:experiment\s*)?#?(\d+)$/i);
+    if (!match || !Number.isSafeInteger(Number(match[1]))) {
+      throw new Error("Lamatic reviewer returned malformed experiment citations.");
+    }
+    return Number(match[1]);
+  });
+  return [...new Set(numbers)];
 }
 
 function normalizeStrategistDecision(value: unknown): StrategistDecision {
@@ -369,7 +389,9 @@ export const reviewerEnvelopeSchema = z.object({
   evidenceSummary: z.string().min(1),
   recommendation: z.string().min(1),
   limitationsText: z.string().min(1),
-  citedExperimentsCsv: scalarCsvSchema,
+  citedExperimentsCsv: z.union([
+    z.string(), z.number(), z.array(z.union([z.string(), z.number()])),
+  ]).optional().default(""),
 });
 
 export function normalizeReviewerOutput(raw: unknown, input: ReviewerInput): ReviewerOutput {
@@ -426,7 +448,7 @@ async function callReviewer(input: ReviewerInput, signal?: AbortSignal): Promise
   return normalizeReviewerOutput(raw, input);
 }
 
-function demoReview(input: ReviewerInput): ReviewerOutput {
+export function createMeasuredReview(input: ReviewerInput): ReviewerOutput {
   const winner = input.experiments.find((experiment) => experiment.number === input.winningExperimentNumber);
   return {
     contractVersion: AGENT_CONTRACT_VERSION,
@@ -436,7 +458,7 @@ function demoReview(input: ReviewerInput): ReviewerOutput {
     evidenceSummary: winner
       ? `${winner.summary} The complete bounded result remained equivalent to the baseline.`
       : `${input.experiments.length} bounded experiment${input.experiments.length === 1 ? " was" : "s were"} evaluated without a proven winner.`,
-    recommendation: winner ? `Use the measured candidate: ${winner.candidateSql}` : "Keep the original query.",
+    recommendation: winner ? `Use measured experiment ${winner.number}; the tested SQL is shown below.` : "Keep the original query.",
     limitations: ["Confirm local sandbox measurements on representative production data."],
     citedExperiments: input.experiments.map((experiment) => experiment.number),
   };
@@ -455,5 +477,5 @@ export async function reviewTuningOutcome(
   input: ReviewerInput,
   signal?: AbortSignal,
 ): Promise<ReviewerOutput> {
-  return mode === "live" ? callReviewer(input, signal) : demoReview(input);
+  return mode === "live" ? callReviewer(input, signal) : createMeasuredReview(input);
 }
